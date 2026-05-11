@@ -1,0 +1,25 @@
+services:
+  judge-agent:
+    image: zerone-judge-agent:latest
+    build:
+      context: ..
+    env_file:
+      - ./env/judge-agent.env
+    environment:
+      JUDGE_SANDBOX_MODE: docker
+      JUDGE_CHECKER_SANDBOX_MODE: docker
+      JUDGE_SANDBOX_IMAGE: zerone-judge-agent:latest
+      JUDGE_SANDBOX_CPUS: "1"
+      JUDGE_SANDBOX_MEMORY_MB: "512"
+      JUDGE_SANDBOX_PIDS_LIMIT: "128"
+      JUDGE_OUTPUT_LIMIT_BYTES: "1048576"
+    volumes:
+      - /var/lib/zerone-judge:/var/lib/zerone-judge
+      - /var/run/docker.sock:/var/run/docker.sock
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 1024
+    mem_limit: ${JUDGE_AGENT_CONTAINER_MEMORY:-6g}
+    cpus: ${JUDGE_AGENT_CONTAINER_CPUS:-2}
+    restart: unless-stopped
+
