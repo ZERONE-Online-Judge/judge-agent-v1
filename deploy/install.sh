@@ -2,25 +2,22 @@
 set -euo pipefail
 
 ###############################################################################
-# Zerone Judge Agent Bootstrap (Ubuntu)
+# Zerone Judge Agent Installer (Ubuntu, repo already cloned)
 #
 # 사용법:
-#   1) 아래 설정값만 수정
-#   2) sudo bash bootstrap_ubuntu_judge_agent.sh
+#   1) 저장소 클론
+#   2) cd judge-agent-v1/deploy
+#   3) 아래 설정값 수정
+#   4) sudo bash install.sh
 #
 # 이 스크립트가 수행하는 작업:
 #   - apt update / 필수 패키지 설치
 #   - docker / docker compose 설치
-#   - judge-agent 저장소 clone 또는 pull
 #   - env 파일 생성/업데이트
 #   - docker compose up -d --build
 ###############################################################################
 
 ### ====== 사용자 설정 ======
-REPO_URL="https://github.com/ZERONE-Online-Judge/judge-agent-v1.git"
-REPO_BRANCH="main"
-REPO_DIR="/opt/zerone_online_judge"
-
 INTERNAL_API_BASE_URL="https://judge.zerone01.kr/api"
 JUDGE_NODE_NAME="zoj-judge-agent-0"
 JUDGE_NODE_SECRET=""
@@ -32,11 +29,6 @@ JUDGE_AGENT_CONTAINER_MEMORY="20g"
 
 if [[ $EUID -ne 0 ]]; then
   echo "[ERROR] sudo/root 로 실행해야 합니다."
-  exit 1
-fi
-
-if [[ "$REPO_URL" == *"<org>"* || "$REPO_URL" == *"<repo>"* ]]; then
-  echo "[ERROR] REPO_URL 값을 실제 git 주소로 바꿔주세요."
   exit 1
 fi
 
@@ -94,19 +86,16 @@ if id -u "$TARGET_USER" >/dev/null 2>&1; then
   usermod -aG docker "$TARGET_USER" || true
 fi
 
-if [[ -d "$REPO_DIR/.git" ]]; then
-  log "기존 저장소 pull (${REPO_BRANCH})"
-  git -C "$REPO_DIR" fetch --all --tags
-  git -C "$REPO_DIR" checkout "$REPO_BRANCH"
-  git -C "$REPO_DIR" pull --ff-only origin "$REPO_BRANCH"
-else
-  log "저장소 clone -> $REPO_DIR"
-  git clone --branch "$REPO_BRANCH" "$REPO_URL" "$REPO_DIR"
-fi
-
-ENV_DIR="$REPO_DIR/judge_agent_v1/deploy/env"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_DIR="$SCRIPT_DIR/env"
 ENV_EXAMPLE="$ENV_DIR/judge-agent.env.example"
 ENV_FILE="$ENV_DIR/judge-agent.env"
+COMPOSE_FILE="$SCRIPT_DIR/compose.yaml"
+
+if [[ ! -f "$COMPOSE_FILE" ]]; then
+  echo "[ERROR] compose 파일이 없습니다: $COMPOSE_FILE"
+  exit 1
+fi
 
 mkdir -p "$ENV_DIR"
 if [[ ! -f "$ENV_EXAMPLE" ]]; then
@@ -141,14 +130,14 @@ mkdir -p /var/lib/zerone-judge
 chown -R root:root /var/lib/zerone-judge
 
 log "judge-agent compose 실행"
-cd "$REPO_DIR/judge_agent_v1/deploy"
-docker compose -f compose.yaml up -d --build
+cd "$SCRIPT_DIR"
+docker compose -f "$COMPOSE_FILE" up -d --build
 
 log "완료"
-docker compose -f compose.yaml ps
+docker compose -f "$COMPOSE_FILE" ps
 echo
 echo "로그 확인:"
-echo "  docker compose -f $REPO_DIR/judge_agent_v1/deploy/compose.yaml logs -f judge-agent"
+echo "  docker compose -f $COMPOSE_FILE logs -f judge-agent"
 echo "  (node secret: $JUDGE_NODE_SECRET)"
 echo
 echo "백엔드 연결 확인:"
