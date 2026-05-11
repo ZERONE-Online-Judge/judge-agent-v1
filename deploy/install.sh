@@ -17,7 +17,7 @@ set -euo pipefail
 ###############################################################################
 
 ### ====== 사용자 설정 ======
-REPO_URL="https://github.com/<org>/<repo>.git"
+REPO_URL="https://github.com/ZERONE-Online-Judge/judge-agent-v1.git"
 REPO_BRANCH="main"
 REPO_DIR="/opt/zerone_online_judge"
 
