@@ -34,6 +34,19 @@ fi
 
 log() { echo "[bootstrap] $*"; }
 
+ensure_docker_systemd() {
+  log "Resetting docker systemd units"
+  systemctl unmask docker.service docker.socket || true
+  systemctl daemon-reload
+  systemctl reset-failed docker.service docker.socket || true
+
+  log "Enabling docker.socket first"
+  systemctl enable --now docker.socket
+
+  log "Enabling docker.service"
+  systemctl enable --now docker.service
+}
+
 generate_secret() {
   if command -v openssl >/dev/null 2>&1; then
     openssl rand -hex 32
@@ -86,7 +99,19 @@ if ! docker compose version >/dev/null 2>&1; then
   exit 1
 fi
 
-systemctl enable --now docker
+ensure_docker_systemd
+
+if ! systemctl is-active --quiet docker.socket; then
+  echo "[ERROR] docker.socket is not active."
+  systemctl status docker.socket --no-pager -l || true
+  exit 1
+fi
+
+if ! systemctl is-active --quiet docker.service; then
+  echo "[ERROR] docker.service is not active."
+  systemctl status docker.service --no-pager -l || true
+  exit 1
+fi
 
 TARGET_USER="${SUDO_USER:-root}"
 if id -u "$TARGET_USER" >/dev/null 2>&1; then
