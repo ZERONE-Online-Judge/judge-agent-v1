@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import base64
+import gzip
+import json
 import os
 import signal
 import shutil
@@ -28,6 +31,7 @@ class ExecutionResult:
 class PreparedChecker:
     command: list[str]
     cwd: Path
+    cached_binary: Path | None = None
 
 
 ProgressCallback = Callable[[str, int | None, int | None], None]
@@ -46,6 +50,7 @@ class JudgeExecutor:
         submission = job["submission"]
         language = submission["language"]
         source_code = submission["source_code"]
+        self._hydrate_job_bundle(job)
         job_dir = self.work_root / job["judge_job_id"]
         if job_dir.exists():
             shutil.rmtree(job_dir)
@@ -65,6 +70,23 @@ class JudgeExecutor:
             return self._run_final(prepared, job_dir, job)
         finally:
             shutil.rmtree(job_dir, ignore_errors=True)
+
+    def _hydrate_job_bundle(self, job: dict) -> None:
+        bundle_url = job.get("bundle_url")
+        if not isinstance(bundle_url, str) or not bundle_url:
+            return
+        try:
+            raw = self._read_object_bytes(bundle_url, "")
+            if raw[:2] == b"\x1f\x8b":
+                raw = gzip.decompress(raw)
+            payload = json.loads(raw.decode("utf-8"))
+            if isinstance(payload.get("testcases"), list):
+                job["testcases"] = payload["testcases"]
+            if isinstance(payload.get("package_files"), list):
+                job["package_files"] = payload["package_files"]
+        except Exception:
+            # fall back to per-object flow
+            return
 
     def _prepare_command(self, job_dir: Path, language: str, source_code: str) -> list[str] | ExecutionResult:
         if language == "python313":
@@ -204,17 +226,29 @@ class JudgeExecutor:
 
         # validator is only used in testcase/package verification stage.
         # judge runtime uses checker only (no validator re-run here).
+        checker_storage_key = str(checker_file.get("storage_key") or "")
+        resource_storage_keys = sorted(
+            str(item.get("storage_key") or "")
+            for item in package_files
+            if item.get("role") == "package-resource"
+        )
+        if checker_storage_key:
+            fast_cache_key = self._checker_cache_key_from_storage(checker_storage_key, resource_storage_keys)
+            fast_binary = self.checker_cache_root / fast_cache_key / "checker"
+            if fast_binary.exists():
+                shutil.copy2(fast_binary, checker_dir / "checker")
+                return PreparedChecker([str(checker_dir / "checker")], checker_dir, cached_binary=fast_binary)
 
         resources = [item for item in package_files if item.get("role") == "package-resource"]
         resource_blobs: list[tuple[str, bytes]] = []
         for resource in resources:
             resource_name = Path(resource.get("original_filename") or resource["storage_key"]).name
-            resource_bytes = self._read_object_bytes(resource.get("url"), resource["storage_key"])
+            resource_bytes = self._package_file_bytes(resource)
             resource_blobs.append((resource_name, resource_bytes))
             (checker_dir / resource_name).write_bytes(resource_bytes)
 
         filename = Path(checker_file.get("original_filename") or checker_file["storage_key"]).name
-        checker_bytes = self._read_object_bytes(checker_file.get("url"), checker_file["storage_key"])
+        checker_bytes = self._package_file_bytes(checker_file)
         source_path = checker_dir / filename
         source_path.write_bytes(checker_bytes)
         suffix = source_path.suffix.lower()
@@ -225,14 +259,27 @@ class JudgeExecutor:
             if isinstance(cached, ExecutionResult):
                 return cached
             shutil.copy2(cached, checker_dir / "checker")
-            return PreparedChecker([str(checker_dir / "checker")], checker_dir)
+            return PreparedChecker([str(checker_dir / "checker")], checker_dir, cached_binary=cached)
         if suffix == ".c":
             cached = self._ensure_cached_checker_binary(filename, suffix, checker_bytes, resource_blobs)
             if isinstance(cached, ExecutionResult):
                 return cached
             shutil.copy2(cached, checker_dir / "checker")
-            return PreparedChecker([str(checker_dir / "checker")], checker_dir)
+            return PreparedChecker([str(checker_dir / "checker")], checker_dir, cached_binary=cached)
         return ExecutionResult("system_error", None, f"unsupported checker file: {filename}")
+
+    def _checker_cache_key_from_storage(self, checker_storage_key: str, resource_storage_keys: list[str]) -> str:
+        digest = hashlib.sha256()
+        digest.update(checker_storage_key.encode("utf-8"))
+        for item in resource_storage_keys:
+            digest.update(item.encode("utf-8"))
+        return digest.hexdigest()
+
+    def _package_file_bytes(self, package_file: dict) -> bytes:
+        inline = package_file.get("inline_bytes_b64")
+        if isinstance(inline, str) and inline:
+            return base64.b64decode(inline.encode("ascii"))
+        return self._read_object_bytes(package_file.get("url"), package_file["storage_key"])
 
     def _ensure_cached_checker_binary(
         self,
