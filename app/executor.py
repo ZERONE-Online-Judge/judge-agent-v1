@@ -38,7 +38,9 @@ class JudgeExecutor:
         self.work_root = work_root or settings.work_root
         self.sandbox_mode = sandbox_mode or settings.sandbox_mode
         self.output_limit_bytes = output_limit_bytes or settings.output_limit_bytes
+        self.checker_cache_root = self.work_root / "checker-cache"
         self.work_root.mkdir(parents=True, exist_ok=True)
+        self.checker_cache_root.mkdir(parents=True, exist_ok=True)
 
     def judge(self, job: dict, progress: ProgressCallback | None = None) -> ExecutionResult:
         submission = job["submission"]
@@ -199,37 +201,82 @@ class JudgeExecutor:
         checker_file = checker_files[-1]
         checker_dir = job_dir / "checker"
         checker_dir.mkdir(parents=True, exist_ok=True)
-        for resource in [item for item in package_files if item.get("role") == "package-resource"]:
+
+        # validator is only used in testcase/package verification stage.
+        # judge runtime uses checker only (no validator re-run here).
+
+        resources = [item for item in package_files if item.get("role") == "package-resource"]
+        resource_blobs: list[tuple[str, bytes]] = []
+        for resource in resources:
             resource_name = Path(resource.get("original_filename") or resource["storage_key"]).name
-            (checker_dir / resource_name).write_bytes(self._read_object_bytes(resource.get("url"), resource["storage_key"]))
+            resource_bytes = self._read_object_bytes(resource.get("url"), resource["storage_key"])
+            resource_blobs.append((resource_name, resource_bytes))
+            (checker_dir / resource_name).write_bytes(resource_bytes)
 
         filename = Path(checker_file.get("original_filename") or checker_file["storage_key"]).name
+        checker_bytes = self._read_object_bytes(checker_file.get("url"), checker_file["storage_key"])
         source_path = checker_dir / filename
-        source_path.write_bytes(self._read_object_bytes(checker_file.get("url"), checker_file["storage_key"]))
+        source_path.write_bytes(checker_bytes)
         suffix = source_path.suffix.lower()
         if suffix == ".py":
             return PreparedChecker(["python3.13" if shutil.which("python3.13") else "python3", str(source_path)], checker_dir)
         if suffix in {".cpp", ".cc", ".cxx"}:
-            compiled = self._run_command(
-                ["g++", "-std=c++17", "-O2", filename, "-o", "checker"],
-                checker_dir,
-                timeout_seconds=20,
-                sandbox_mode_override=settings.checker_sandbox_mode,
-            )
-            if compiled.returncode != 0:
-                return ExecutionResult("system_error", None, "checker compile failed: " + (compiled.stderr or compiled.stdout)[-4000:])
+            cached = self._ensure_cached_checker_binary(filename, suffix, checker_bytes, resource_blobs)
+            if isinstance(cached, ExecutionResult):
+                return cached
+            shutil.copy2(cached, checker_dir / "checker")
             return PreparedChecker([str(checker_dir / "checker")], checker_dir)
         if suffix == ".c":
-            compiled = self._run_command(
-                ["gcc", "-std=c99", "-O2", filename, "-o", "checker"],
-                checker_dir,
-                timeout_seconds=20,
-                sandbox_mode_override=settings.checker_sandbox_mode,
-            )
-            if compiled.returncode != 0:
-                return ExecutionResult("system_error", None, "checker compile failed: " + (compiled.stderr or compiled.stdout)[-4000:])
+            cached = self._ensure_cached_checker_binary(filename, suffix, checker_bytes, resource_blobs)
+            if isinstance(cached, ExecutionResult):
+                return cached
+            shutil.copy2(cached, checker_dir / "checker")
             return PreparedChecker([str(checker_dir / "checker")], checker_dir)
         return ExecutionResult("system_error", None, f"unsupported checker file: {filename}")
+
+    def _ensure_cached_checker_binary(
+        self,
+        filename: str,
+        suffix: str,
+        checker_bytes: bytes,
+        resource_blobs: list[tuple[str, bytes]],
+    ) -> Path | ExecutionResult:
+        digest = hashlib.sha256()
+        digest.update(filename.encode("utf-8"))
+        digest.update(suffix.encode("utf-8"))
+        digest.update(checker_bytes)
+        for resource_name, resource_bytes in sorted(resource_blobs, key=lambda item: item[0]):
+            digest.update(resource_name.encode("utf-8"))
+            digest.update(resource_bytes)
+        cache_key = digest.hexdigest()
+        cache_dir = self.checker_cache_root / cache_key
+        binary_path = cache_dir / "checker"
+        if binary_path.exists():
+            return binary_path
+
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        (cache_dir / filename).write_bytes(checker_bytes)
+        for resource_name, resource_bytes in resource_blobs:
+            (cache_dir / resource_name).write_bytes(resource_bytes)
+
+        if suffix in {".cpp", ".cc", ".cxx"}:
+            compile_cmd = ["g++", "-std=c++17", "-O2", filename, "-o", "checker"]
+        elif suffix == ".c":
+            compile_cmd = ["gcc", "-std=c99", "-O2", filename, "-o", "checker"]
+        else:
+            return ExecutionResult("system_error", None, f"unsupported checker file: {filename}")
+
+        compiled = self._run_command(
+            compile_cmd,
+            cache_dir,
+            timeout_seconds=20,
+            sandbox_mode_override=settings.checker_sandbox_mode,
+        )
+        if compiled.returncode != 0:
+            return ExecutionResult("system_error", None, "checker compile failed: " + (compiled.stderr or compiled.stdout)[-4000:])
+        if not binary_path.exists():
+            return ExecutionResult("system_error", None, "checker compile failed: checker binary missing")
+        return binary_path
 
     def _run_checker(
         self,

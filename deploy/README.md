@@ -39,4 +39,4 @@ docker compose -f compose.yaml logs -f judge-agent
 
 - 이 구성은 중앙 백엔드/MinIO를 사용합니다.
 - judge VM에는 MinIO를 띄울 필요가 없습니다.
-- 기존 루트 `deploy/compose.judge-agent.yaml`은 호환을 위해 유지됩니다.
+- 루트 `deploy/compose.judge-agent.yaml`은 제거되었고, judge-agent 배포는 이 폴더 기준으로만 사용합니다.
