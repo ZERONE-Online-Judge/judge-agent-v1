@@ -1,11 +1,11 @@
 # Judge Agent Standalone Deploy
 
-`judge_agent`만 별도 저장소/폴더로 분리해서 배포할 때 사용하는 구성입니다.
+`judge_agent_v1`만 별도 저장소/폴더로 분리해서 배포할 때 사용하는 구성입니다.
 
 ## 1) 준비
 
 ```bash
-cd judge_agent/deploy
+cd judge_agent_v1/deploy
 cp env/judge-agent.env.example env/judge-agent.env
 ```
 
@@ -14,6 +14,13 @@ cp env/judge-agent.env.example env/judge-agent.env
 - `INTERNAL_API_BASE_URL` (예: `https://judge.zerone01.kr/api`)
 - `JUDGE_NODE_NAME` (VM마다 고유)
 - `JUDGE_NODE_SECRET` (VM마다 고유)
+
+또는 긴 명령 없이, 파일 안 설정값만 바꾸는 부트스트랩 스크립트를 사용하세요.
+
+```bash
+cd judge_agent_v1/deploy
+sudo bash bootstrap_ubuntu_judge_agent.sh
+```
 
 ## 2) 실행
 
@@ -33,4 +40,3 @@ docker compose -f compose.yaml logs -f judge-agent
 - 이 구성은 중앙 백엔드/MinIO를 사용합니다.
 - judge VM에는 MinIO를 띄울 필요가 없습니다.
 - 기존 루트 `deploy/compose.judge-agent.yaml`은 호환을 위해 유지됩니다.
-
