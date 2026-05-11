@@ -4,20 +4,20 @@ set -euo pipefail
 ###############################################################################
 # Zerone Judge Agent Installer (Ubuntu, repo already cloned)
 #
-# 사용법:
-#   1) 저장소 클론
+# Usage:
+#   1) Clone repository
 #   2) cd judge-agent-v1/deploy
-#   3) 아래 설정값 수정
+#   3) Edit configuration values below
 #   4) sudo bash install.sh
 #
-# 이 스크립트가 수행하는 작업:
-#   - apt update / 필수 패키지 설치
-#   - docker / docker compose 설치
-#   - env 파일 생성/업데이트
+# What this script does:
+#   - apt update / install required packages
+#   - install docker / docker compose
+#   - create/update env file
 #   - docker compose up -d --build
 ###############################################################################
 
-### ====== 사용자 설정 ======
+### ====== USER CONFIG ======
 INTERNAL_API_BASE_URL="https://judge.zerone01.kr/api"
 JUDGE_NODE_NAME="zoj-judge-agent-0"
 JUDGE_NODE_SECRET=""
@@ -25,10 +25,10 @@ JUDGE_NODE_SECRET=""
 JUDGE_TOTAL_SLOTS="8"
 JUDGE_AGENT_CONTAINER_CPUS="10"
 JUDGE_AGENT_CONTAINER_MEMORY="20g"
-### =========================
+### ========================
 
 if [[ $EUID -ne 0 ]]; then
-  echo "[ERROR] sudo/root 로 실행해야 합니다."
+  echo "[ERROR] Run this script with sudo/root."
   exit 1
 fi
 
@@ -44,7 +44,7 @@ generate_secret() {
 
 if [[ -z "$JUDGE_NODE_SECRET" || "$JUDGE_NODE_SECRET" == "change-me-very-strong-secret" ]]; then
   JUDGE_NODE_SECRET="$(generate_secret)"
-  echo "[bootstrap] JUDGE_NODE_SECRET 미설정 -> 자동 생성됨"
+  echo "[bootstrap] JUDGE_NODE_SECRET not set -> generated automatically"
 fi
 
 upsert_env() {
@@ -60,23 +60,30 @@ upsert_env() {
   fi
 }
 
-log "apt update / base package 설치"
+log "apt update / install base packages"
 apt-get update
 apt-get install -y ca-certificates curl gnupg lsb-release git
 
-if ! command -v docker >/dev/null 2>&1; then
-  log "docker 설치"
-  apt-get install -y docker.io || true
+if ! docker compose version >/dev/null 2>&1; then
+  log "Registering Docker official apt repository"
+  install -m 0755 -d /etc/apt/keyrings
+  if [[ ! -f /etc/apt/keyrings/docker.gpg ]]; then
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    chmod a+r /etc/apt/keyrings/docker.gpg
+  fi
+
+  . /etc/os-release
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu ${VERSION_CODENAME} stable" \
+    > /etc/apt/sources.list.d/docker.list
+
+  apt-get update
+  log "Installing docker-ce and compose v2"
+  apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 fi
 
 if ! docker compose version >/dev/null 2>&1; then
-  log "docker compose plugin 설치"
-  apt-get install -y docker-compose-plugin || true
-fi
-
-if ! docker compose version >/dev/null 2>&1; then
-  log "docker-compose fallback 설치"
-  apt-get install -y docker-compose
+  echo "[ERROR] Failed to install docker compose v2."
+  exit 1
 fi
 
 systemctl enable --now docker
@@ -93,13 +100,13 @@ ENV_FILE="$ENV_DIR/judge-agent.env"
 COMPOSE_FILE="$SCRIPT_DIR/compose.yaml"
 
 if [[ ! -f "$COMPOSE_FILE" ]]; then
-  echo "[ERROR] compose 파일이 없습니다: $COMPOSE_FILE"
+  echo "[ERROR] Compose file not found: $COMPOSE_FILE"
   exit 1
 fi
 
 mkdir -p "$ENV_DIR"
 if [[ ! -f "$ENV_EXAMPLE" ]]; then
-  echo "[ERROR] env 예시 파일이 없습니다: $ENV_EXAMPLE"
+  echo "[ERROR] Env example file not found: $ENV_EXAMPLE"
   exit 1
 fi
 if [[ ! -f "$ENV_FILE" ]]; then
@@ -107,7 +114,7 @@ if [[ ! -f "$ENV_FILE" ]]; then
 fi
 chmod 600 "$ENV_FILE"
 
-log "judge-agent env 설정"
+log "Configuring judge-agent env"
 upsert_env "$ENV_FILE" "APP_ENV" "production"
 upsert_env "$ENV_FILE" "INTERNAL_API_BASE_URL" "$INTERNAL_API_BASE_URL"
 upsert_env "$ENV_FILE" "JUDGE_NODE_NAME" "$JUDGE_NODE_NAME"
@@ -129,16 +136,16 @@ upsert_env "$ENV_FILE" "JUDGE_POLL_INTERVAL_SECONDS" "1"
 mkdir -p /var/lib/zerone-judge
 chown -R root:root /var/lib/zerone-judge
 
-log "judge-agent compose 실행"
+log "Starting judge-agent with docker compose"
 cd "$SCRIPT_DIR"
 docker compose -f "$COMPOSE_FILE" up -d --build
 
-log "완료"
+log "Done"
 docker compose -f "$COMPOSE_FILE" ps
 echo
-echo "로그 확인:"
+echo "Check logs:"
 echo "  docker compose -f $COMPOSE_FILE logs -f judge-agent"
 echo "  (node secret: $JUDGE_NODE_SECRET)"
 echo
-echo "백엔드 연결 확인:"
+echo "Backend connectivity check:"
 echo "  curl -sS ${INTERNAL_API_BASE_URL%/api}/api/public/judge-status"
