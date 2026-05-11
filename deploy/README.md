@@ -35,6 +35,21 @@ docker compose -f compose.yaml ps
 docker compose -f compose.yaml logs -f judge-agent
 ```
 
+## 4) 업데이트 (git pull + 재빌드/재기동)
+
+```bash
+cd judge_agent_v1/deploy
+./update.sh
+```
+
+로컬 변경이 있는 서버는 아래 중 하나 사용:
+
+```bash
+./update.sh --stash
+# 또는
+./update.sh --discard-local
+```
+
 ## 참고
 
 - 이 구성은 중앙 백엔드/MinIO를 사용합니다.
