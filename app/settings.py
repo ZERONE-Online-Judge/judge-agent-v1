@@ -13,6 +13,7 @@ class Settings:
     agent_version: str = os.getenv("JUDGE_AGENT_VERSION", "0.1.0")
     poll_interval_seconds: float = float(os.getenv("JUDGE_POLL_INTERVAL_SECONDS", "1"))
     long_poll_seconds: float = float(os.getenv("JUDGE_LONG_POLL_SECONDS", "20"))
+    heartbeat_interval_seconds: float = float(os.getenv("JUDGE_HEARTBEAT_INTERVAL_SECONDS", "2"))
     default_time_limit_seconds: float = float(os.getenv("JUDGE_DEFAULT_TIME_LIMIT_SECONDS", "3"))
     sandbox_mode: str = os.getenv("JUDGE_SANDBOX_MODE", "local")
     checker_sandbox_mode: str = os.getenv("JUDGE_CHECKER_SANDBOX_MODE", os.getenv("JUDGE_SANDBOX_MODE", "local"))

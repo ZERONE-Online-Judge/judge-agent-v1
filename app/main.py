@@ -50,7 +50,7 @@ def main() -> None:
         last_heartbeat = 0.0
         while True:
             now = time.monotonic()
-            if now - last_heartbeat >= 5:
+            if now - last_heartbeat >= max(settings.heartbeat_interval_seconds, 0.5):
                 try:
                     client.heartbeat(node_id, len(running))
                     last_heartbeat = now
