@@ -40,12 +40,20 @@ if [[ "$REPO_URL" == *"<org>"* || "$REPO_URL" == *"<repo>"* ]]; then
   exit 1
 fi
 
-if [[ -z "$JUDGE_NODE_SECRET" || "$JUDGE_NODE_SECRET" == "change-me-very-strong-secret" ]]; then
-  echo "[ERROR] JUDGE_NODE_SECRET 값을 강한 랜덤값으로 바꿔주세요."
-  exit 1
-fi
-
 log() { echo "[bootstrap] $*"; }
+
+generate_secret() {
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex 32
+    return
+  fi
+  tr -dc 'A-Za-z0-9' </dev/urandom | head -c 64
+}
+
+if [[ -z "$JUDGE_NODE_SECRET" || "$JUDGE_NODE_SECRET" == "change-me-very-strong-secret" ]]; then
+  JUDGE_NODE_SECRET="$(generate_secret)"
+  echo "[bootstrap] JUDGE_NODE_SECRET 미설정 -> 자동 생성됨"
+fi
 
 upsert_env() {
   local file="$1"
@@ -108,6 +116,7 @@ fi
 if [[ ! -f "$ENV_FILE" ]]; then
   cp "$ENV_EXAMPLE" "$ENV_FILE"
 fi
+chmod 600 "$ENV_FILE"
 
 log "judge-agent env 설정"
 upsert_env "$ENV_FILE" "APP_ENV" "production"
@@ -140,7 +149,7 @@ docker compose -f compose.yaml ps
 echo
 echo "로그 확인:"
 echo "  docker compose -f $REPO_DIR/judge_agent_v1/deploy/compose.yaml logs -f judge-agent"
+echo "  (node secret: $JUDGE_NODE_SECRET)"
 echo
 echo "백엔드 연결 확인:"
 echo "  curl -sS ${INTERNAL_API_BASE_URL%/api}/api/public/judge-status"
-
