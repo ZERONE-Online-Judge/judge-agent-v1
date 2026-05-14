@@ -25,6 +25,8 @@ class ExecutionResult:
     score: int | None
     message: str | None = None
     failed_testcase_order: int | None = None
+    runtime_ms: int | None = None
+    memory_kb: int | None = None
 
 
 @dataclass(frozen=True)
@@ -122,14 +124,14 @@ class JudgeExecutor:
     def _run_final(self, command: list[str], job_dir: Path, job: dict) -> ExecutionResult:
         completed = self._run_command(command, job_dir, timeout_seconds=self._problem_time_limit_seconds(job), stdin="")
         if completed.returncode == 0:
-            return ExecutionResult("accepted", self._problem_max_score(job), None)
+            return self._execution_result("accepted", self._problem_max_score(job), None, completed=completed)
         if completed.returncode == 124:
-            return ExecutionResult("time_limit_exceeded", 0, "time limit exceeded")
+            return self._execution_result("time_limit_exceeded", 0, "time limit exceeded", completed=completed)
         if completed.returncode == 125:
-            return ExecutionResult("output_limit_exceeded", 0, "output limit exceeded")
+            return self._execution_result("output_limit_exceeded", 0, "output limit exceeded", completed=completed)
         if completed.returncode in {137, -signal.SIGKILL}:
-            return ExecutionResult("memory_limit_exceeded", 0, "memory limit exceeded")
-        return ExecutionResult("runtime_error", 0, completed.stderr[-4000:] or completed.stdout[-4000:])
+            return self._execution_result("memory_limit_exceeded", 0, "memory limit exceeded", completed=completed)
+        return self._execution_result("runtime_error", 0, completed.stderr[-4000:] or completed.stdout[-4000:], completed=completed)
 
     def _run_testcases(
         self,
@@ -150,6 +152,8 @@ class JudgeExecutor:
                 return started
             sandbox_container_id = started
         total = len(testcases)
+        max_runtime_ms: int | None = None
+        max_memory_kb: int | None = None
         if progress:
             progress("judging", 0, total)
         try:
@@ -164,14 +168,16 @@ class JudgeExecutor:
                     stdin=normalized_input,
                     sandbox_container_id=sandbox_container_id,
                 )
+                max_runtime_ms = self._max_metric(max_runtime_ms, getattr(completed, "runtime_ms", None))
+                max_memory_kb = self._max_metric(max_memory_kb, getattr(completed, "memory_kb", None))
                 if completed.returncode == 124:
-                    return ExecutionResult("time_limit_exceeded", 0, f"time limit exceeded on testcase {testcase['display_order']}", int(testcase["display_order"]))
+                    return self._execution_result("time_limit_exceeded", 0, f"time limit exceeded on testcase {testcase['display_order']}", int(testcase["display_order"]), runtime_ms=max_runtime_ms, memory_kb=max_memory_kb)
                 if completed.returncode == 125:
-                    return ExecutionResult("output_limit_exceeded", 0, f"output limit exceeded on testcase {testcase['display_order']}", int(testcase["display_order"]))
+                    return self._execution_result("output_limit_exceeded", 0, f"output limit exceeded on testcase {testcase['display_order']}", int(testcase["display_order"]), runtime_ms=max_runtime_ms, memory_kb=max_memory_kb)
                 if completed.returncode in {137, -signal.SIGKILL}:
-                    return ExecutionResult("memory_limit_exceeded", 0, f"memory limit exceeded on testcase {testcase['display_order']}", int(testcase["display_order"]))
+                    return self._execution_result("memory_limit_exceeded", 0, f"memory limit exceeded on testcase {testcase['display_order']}", int(testcase["display_order"]), runtime_ms=max_runtime_ms, memory_kb=max_memory_kb)
                 if completed.returncode != 0:
-                    return ExecutionResult("runtime_error", 0, (completed.stderr or completed.stdout)[-4000:], int(testcase["display_order"]))
+                    return self._execution_result("runtime_error", 0, (completed.stderr or completed.stdout)[-4000:], int(testcase["display_order"]), runtime_ms=max_runtime_ms, memory_kb=max_memory_kb)
                 case_label = self._testcase_label(testcase)
                 if checker:
                     checker_result = self._run_checker(
@@ -186,14 +192,14 @@ class JudgeExecutor:
                         sandbox_container_id=sandbox_container_id if settings.checker_sandbox_mode == "docker" else None,
                     )
                     if checker_result:
-                        return checker_result
+                        return self._execution_result(checker_result.status, checker_result.score, checker_result.message, checker_result.failed_testcase_order, runtime_ms=max_runtime_ms, memory_kb=max_memory_kb)
                     if progress:
                         progress("judging", index, total)
                     continue
                 expected = self._normalize_output(expected_text)
                 actual = self._normalize_output(completed.stdout)
                 if actual != expected:
-                    return ExecutionResult(
+                    return self._execution_result(
                         "wrong_answer",
                         0,
                         self._build_wrong_answer_message(
@@ -208,10 +214,12 @@ class JudgeExecutor:
                             source_hash,
                         ),
                         int(testcase["display_order"]),
+                        runtime_ms=max_runtime_ms,
+                        memory_kb=max_memory_kb,
                     )
                 if progress:
                     progress("judging", index, total)
-            return ExecutionResult("accepted", self._problem_max_score(job), None)
+            return self._execution_result("accepted", self._problem_max_score(job), None, runtime_ms=max_runtime_ms, memory_kb=max_memory_kb)
         finally:
             if sandbox_container_id:
                 self._stop_sandbox_container(sandbox_container_id)
@@ -466,6 +474,10 @@ class JudgeExecutor:
         stdin_file.write(stdin.encode("utf-8"))
         stdin_file.seek(0)
         deadline = time.monotonic() + timeout_seconds
+        started_at = time.monotonic()
+        peak_memory_kb: int | None = None
+        last_memory_sample_at = 0.0
+        baseline_child_rss_kb = self._children_maxrss_kb()
         try:
             apply_local_limits = mode == "local" and not (command and command[0] == "docker")
             process = subprocess.Popen(
@@ -476,17 +488,27 @@ class JudgeExecutor:
                 stderr=stderr_file,
                 preexec_fn=self._local_resource_limits() if apply_local_limits else None,
             )
+            peak_memory_kb = self._max_metric(peak_memory_kb, self._memory_sample_kb(process.pid, mode, sandbox_container_id))
             while True:
                 returncode = process.poll()
+                now = time.monotonic()
+                if now - last_memory_sample_at >= 0.05:
+                    last_memory_sample_at = now
+                    sample = self._memory_sample_kb(process.pid, mode, sandbox_container_id)
+                    peak_memory_kb = self._max_metric(peak_memory_kb, sample)
                 if self._file_size(stdout_file) > self.output_limit_bytes or self._file_size(stderr_file) > self.output_limit_bytes:
                     if returncode is None:
                         self._terminate_process(process)
-                    return self._completed_process(command, 125, stdout_file, stderr_file)
+                    return self._completed_process(command, 125, stdout_file, stderr_file, started_at, peak_memory_kb, baseline_child_rss_kb)
                 if returncode is not None:
-                    return self._completed_process(command, returncode, stdout_file, stderr_file)
-                if time.monotonic() >= deadline:
+                    sample = self._memory_sample_kb(process.pid, mode, sandbox_container_id)
+                    peak_memory_kb = self._max_metric(peak_memory_kb, sample)
+                    return self._completed_process(command, returncode, stdout_file, stderr_file, started_at, peak_memory_kb, baseline_child_rss_kb)
+                if now >= deadline:
                     self._terminate_process(process)
-                    return self._completed_process(command, 124, stdout_file, stderr_file, fallback_stderr="time limit exceeded")
+                    sample = self._memory_sample_kb(process.pid, mode, sandbox_container_id)
+                    peak_memory_kb = self._max_metric(peak_memory_kb, sample)
+                    return self._completed_process(command, 124, stdout_file, stderr_file, started_at, peak_memory_kb, baseline_child_rss_kb, fallback_stderr="time limit exceeded")
                 time.sleep(0.01)
         except FileNotFoundError as error:
             return subprocess.CompletedProcess(command, 127, "", str(error))
@@ -611,11 +633,78 @@ class JudgeExecutor:
         returncode: int,
         stdout_file,
         stderr_file,
+        started_at: float | None = None,
+        memory_kb: int | None = None,
+        baseline_child_rss_kb: int | None = None,
         fallback_stderr: str = "",
     ) -> subprocess.CompletedProcess[str]:
         stdout = self._read_limited_text(stdout_file)
         stderr = self._read_limited_text(stderr_file) or fallback_stderr
-        return subprocess.CompletedProcess(command, returncode, stdout, stderr)
+        completed = subprocess.CompletedProcess(command, returncode, stdout, stderr)
+        completed.runtime_ms = max(0, int((time.monotonic() - started_at) * 1000)) if started_at is not None else None
+        fallback_memory_kb = self._children_maxrss_kb()
+        if baseline_child_rss_kb is not None and fallback_memory_kb is not None and fallback_memory_kb <= baseline_child_rss_kb:
+            fallback_memory_kb = None
+        completed.memory_kb = self._max_metric(memory_kb, fallback_memory_kb)
+        return completed
+
+    def _children_maxrss_kb(self) -> int | None:
+        try:
+            import resource
+
+            value = int(resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)
+            # macOS reports bytes, Linux reports kilobytes.
+            return value // 1024 if value > 1024 * 1024 else value
+        except Exception:
+            return None
+
+    def _memory_sample_kb(self, pid: int, mode: str, sandbox_container_id: str | None) -> int | None:
+        if mode == "docker" and sandbox_container_id:
+            return self._container_memory_kb(sandbox_container_id)
+        return self._process_rss_kb(pid)
+
+    def _process_rss_kb(self, pid: int) -> int | None:
+        try:
+            completed = subprocess.run(["ps", "-o", "rss=", "-p", str(pid)], text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=0.2, check=False)
+            value = completed.stdout.strip().splitlines()[-1].strip() if completed.stdout.strip() else ""
+            return int(value) if value else None
+        except Exception:
+            return None
+
+    def _container_memory_kb(self, container_id: str) -> int | None:
+        command = "cat /sys/fs/cgroup/memory.current 2>/dev/null || cat /sys/fs/cgroup/memory/memory.usage_in_bytes 2>/dev/null"
+        try:
+            completed = subprocess.run(["docker", "exec", container_id, "sh", "-lc", command], text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=0.3, check=False)
+            value = completed.stdout.strip().splitlines()[-1].strip() if completed.stdout.strip() else ""
+            return max(0, int(value) // 1024) if value else None
+        except Exception:
+            return None
+
+    def _max_metric(self, current: int | None, candidate: int | None) -> int | None:
+        if candidate is None:
+            return current
+        if current is None:
+            return candidate
+        return max(current, candidate)
+
+    def _execution_result(
+        self,
+        status: str,
+        score: int | None,
+        message: str | None = None,
+        failed_testcase_order: int | None = None,
+        completed: subprocess.CompletedProcess[str] | None = None,
+        runtime_ms: int | None = None,
+        memory_kb: int | None = None,
+    ) -> ExecutionResult:
+        return ExecutionResult(
+            status,
+            score,
+            message,
+            failed_testcase_order,
+            runtime_ms=self._max_metric(runtime_ms, getattr(completed, "runtime_ms", None) if completed else None),
+            memory_kb=self._max_metric(memory_kb, getattr(completed, "memory_kb", None) if completed else None),
+        )
 
     def _read_limited_text(self, file) -> str:
         file.seek(0)

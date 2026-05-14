@@ -80,6 +80,8 @@ class BackendClient:
         compile_message: str | None,
         judge_message: str | None,
         failed_testcase_order: int | None,
+        runtime_ms: int | None = None,
+        memory_kb: int | None = None,
     ) -> None:
         self._request(
             "POST",
@@ -92,6 +94,8 @@ class BackendClient:
                 "compile_message": compile_message,
                 "judge_message": judge_message,
                 "failed_testcase_order": failed_testcase_order,
+                "runtime_ms": runtime_ms,
+                "memory_kb": memory_kb,
             },
         )
 

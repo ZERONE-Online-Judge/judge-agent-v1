@@ -28,6 +28,8 @@ def judge_one(client: BackendClient, executor: JudgeExecutor, job: dict) -> None
         compile_message=result.message if result.status == "compile_error" else None,
         judge_message=result.message,
         failed_testcase_order=result.failed_testcase_order,
+        runtime_ms=result.runtime_ms,
+        memory_kb=result.memory_kb,
     )
     print(f"[judge-agent] reported {job['judge_job_id']} status={result.status}")
 

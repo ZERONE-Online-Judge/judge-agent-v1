@@ -18,6 +18,7 @@ def test_python_submission_accepts(tmp_path: Path):
 
     assert result.status == "accepted"
     assert result.score == 100
+    assert result.runtime_ms is not None
 
 
 def test_python_runtime_error(tmp_path: Path):
@@ -64,6 +65,7 @@ def test_python_testcase_accepts(tmp_path: Path):
 
     assert result.status == "accepted"
     assert result.score == 100
+    assert result.runtime_ms is not None
 
 
 def test_python_testcase_wrong_answer(tmp_path: Path):
