@@ -7,8 +7,8 @@ set -euo pipefail
 # Usage:
 #   1) Clone repository
 #   2) cd judge-agent-v1/deploy
-#   3) Edit configuration values below
-#   4) sudo bash install.sh
+#   3) sudo bash install.sh
+#   4) Answer the configuration prompts
 #
 # What this script does:
 #   - apt update / install required packages
@@ -17,22 +17,18 @@ set -euo pipefail
 #   - docker compose up -d --build
 ###############################################################################
 
-### ====== USER CONFIG ======
-INTERNAL_API_BASE_URL="https://judge.zerone01.kr/api"
-JUDGE_NODE_NAME="zoj-judge-agent-0"
-JUDGE_NODE_SECRET=""
-
-JUDGE_TOTAL_SLOTS="8"
-JUDGE_AGENT_CONTAINER_CPUS="10"
-JUDGE_AGENT_CONTAINER_MEMORY="20g"
-### ========================
-
 if [[ $EUID -ne 0 ]]; then
   echo "[ERROR] Run this script with sudo/root."
   exit 1
 fi
 
 log() { echo "[bootstrap] $*"; }
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_DIR="$SCRIPT_DIR/env"
+ENV_EXAMPLE="$ENV_DIR/judge-agent.env.example"
+ENV_FILE="$ENV_DIR/judge-agent.env"
+COMPOSE_FILE="$SCRIPT_DIR/compose.yaml"
 
 ensure_docker_systemd() {
   log "Resetting docker systemd units"
@@ -55,11 +51,6 @@ generate_secret() {
   tr -dc 'A-Za-z0-9' </dev/urandom | head -c 64
 }
 
-if [[ -z "$JUDGE_NODE_SECRET" || "$JUDGE_NODE_SECRET" == "change-me-very-strong-secret" ]]; then
-  JUDGE_NODE_SECRET="$(generate_secret)"
-  echo "[bootstrap] JUDGE_NODE_SECRET not set -> generated automatically"
-fi
-
 upsert_env() {
   local file="$1"
   local key="$2"
@@ -72,6 +63,104 @@ upsert_env() {
     echo "${key}=${value}" >> "$file"
   fi
 }
+
+env_value() {
+  local file="$1"
+  local key="$2"
+  if [[ ! -f "$file" ]]; then
+    return 0
+  fi
+  grep -E "^${key}=" "$file" | tail -n 1 | cut -d= -f2- || true
+}
+
+prompt_value() {
+  local label="$1"
+  local default_value="$2"
+  local value
+  if [[ ! -t 0 ]]; then
+    printf '%s' "$default_value"
+    return
+  fi
+  read -r -p "$label [$default_value]: " value
+  printf '%s' "${value:-$default_value}"
+}
+
+prompt_secret() {
+  local label="$1"
+  local default_value="$2"
+  local value
+  if [[ ! -t 0 ]]; then
+    printf '%s' "$default_value"
+    return
+  fi
+  if [[ -n "$default_value" && "$default_value" != "change-me-per-node" && "$default_value" != "change-me-very-strong-secret" ]]; then
+    read -r -s -p "$label [Enter면 현재 값 유지]: " value
+    echo
+    printf '%s' "${value:-$default_value}"
+  else
+    read -r -s -p "$label [비우면 자동 생성]: " value
+    echo
+    printf '%s' "$value"
+  fi
+}
+
+configure_inputs() {
+  local existing_file="$1"
+  local internal_api_default
+  local node_name_default
+  local secret_default
+  local total_slots_default
+  local testcase_parallelism_default
+  local cpus_default
+  local memory_default
+
+  internal_api_default="${INTERNAL_API_BASE_URL:-$(env_value "$existing_file" "INTERNAL_API_BASE_URL")}"
+  internal_api_default="${internal_api_default:-https://judge.zerone01.kr/api}"
+  node_name_default="${JUDGE_NODE_NAME:-$(env_value "$existing_file" "JUDGE_NODE_NAME")}"
+  node_name_default="${node_name_default:-zoj-judge-agent-0}"
+  secret_default="${JUDGE_NODE_SECRET:-$(env_value "$existing_file" "JUDGE_NODE_SECRET")}"
+  total_slots_default="${JUDGE_TOTAL_SLOTS:-$(env_value "$existing_file" "JUDGE_TOTAL_SLOTS")}"
+  total_slots_default="${total_slots_default:-8}"
+  testcase_parallelism_default="${JUDGE_TESTCASE_PARALLELISM:-$(env_value "$existing_file" "JUDGE_TESTCASE_PARALLELISM")}"
+  testcase_parallelism_default="${testcase_parallelism_default:-2}"
+  cpus_default="${JUDGE_AGENT_CONTAINER_CPUS:-$(env_value "$existing_file" "JUDGE_AGENT_CONTAINER_CPUS")}"
+  cpus_default="${cpus_default:-10}"
+  memory_default="${JUDGE_AGENT_CONTAINER_MEMORY:-$(env_value "$existing_file" "JUDGE_AGENT_CONTAINER_MEMORY")}"
+  memory_default="${memory_default:-20g}"
+
+  echo
+  echo "Judge agent configuration"
+  echo "Press Enter to keep the shown default."
+  INTERNAL_API_BASE_URL="$(prompt_value "Backend internal API base URL" "$internal_api_default")"
+  JUDGE_NODE_NAME="$(prompt_value "Judge node name" "$node_name_default")"
+  JUDGE_NODE_SECRET="$(prompt_secret "Judge node secret" "$secret_default")"
+  JUDGE_TOTAL_SLOTS="$(prompt_value "Concurrent submission slots" "$total_slots_default")"
+  JUDGE_TESTCASE_PARALLELISM="$(prompt_value "Parallel testcases per submission" "$testcase_parallelism_default")"
+  JUDGE_AGENT_CONTAINER_CPUS="$(prompt_value "Container CPU limit" "$cpus_default")"
+  JUDGE_AGENT_CONTAINER_MEMORY="$(prompt_value "Container memory limit" "$memory_default")"
+
+  if [[ -z "$JUDGE_NODE_SECRET" || "$JUDGE_NODE_SECRET" == "change-me-per-node" || "$JUDGE_NODE_SECRET" == "change-me-very-strong-secret" ]]; then
+    JUDGE_NODE_SECRET="$(generate_secret)"
+    echo "[bootstrap] JUDGE_NODE_SECRET not set -> generated automatically"
+  fi
+}
+
+if [[ ! -f "$COMPOSE_FILE" ]]; then
+  echo "[ERROR] Compose file not found: $COMPOSE_FILE"
+  exit 1
+fi
+
+mkdir -p "$ENV_DIR"
+if [[ ! -f "$ENV_EXAMPLE" ]]; then
+  echo "[ERROR] Env example file not found: $ENV_EXAMPLE"
+  exit 1
+fi
+if [[ ! -f "$ENV_FILE" ]]; then
+  cp "$ENV_EXAMPLE" "$ENV_FILE"
+fi
+chmod 600 "$ENV_FILE"
+
+configure_inputs "$ENV_FILE"
 
 log "apt update / install base packages"
 apt-get update
@@ -118,33 +207,13 @@ if id -u "$TARGET_USER" >/dev/null 2>&1; then
   usermod -aG docker "$TARGET_USER" || true
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ENV_DIR="$SCRIPT_DIR/env"
-ENV_EXAMPLE="$ENV_DIR/judge-agent.env.example"
-ENV_FILE="$ENV_DIR/judge-agent.env"
-COMPOSE_FILE="$SCRIPT_DIR/compose.yaml"
-
-if [[ ! -f "$COMPOSE_FILE" ]]; then
-  echo "[ERROR] Compose file not found: $COMPOSE_FILE"
-  exit 1
-fi
-
-mkdir -p "$ENV_DIR"
-if [[ ! -f "$ENV_EXAMPLE" ]]; then
-  echo "[ERROR] Env example file not found: $ENV_EXAMPLE"
-  exit 1
-fi
-if [[ ! -f "$ENV_FILE" ]]; then
-  cp "$ENV_EXAMPLE" "$ENV_FILE"
-fi
-chmod 600 "$ENV_FILE"
-
 log "Configuring judge-agent env"
 upsert_env "$ENV_FILE" "APP_ENV" "production"
 upsert_env "$ENV_FILE" "INTERNAL_API_BASE_URL" "$INTERNAL_API_BASE_URL"
 upsert_env "$ENV_FILE" "JUDGE_NODE_NAME" "$JUDGE_NODE_NAME"
 upsert_env "$ENV_FILE" "JUDGE_NODE_SECRET" "$JUDGE_NODE_SECRET"
 upsert_env "$ENV_FILE" "JUDGE_TOTAL_SLOTS" "$JUDGE_TOTAL_SLOTS"
+upsert_env "$ENV_FILE" "JUDGE_TESTCASE_PARALLELISM" "$JUDGE_TESTCASE_PARALLELISM"
 upsert_env "$ENV_FILE" "JUDGE_AGENT_CONTAINER_CPUS" "$JUDGE_AGENT_CONTAINER_CPUS"
 upsert_env "$ENV_FILE" "JUDGE_AGENT_CONTAINER_MEMORY" "$JUDGE_AGENT_CONTAINER_MEMORY"
 upsert_env "$ENV_FILE" "JUDGE_WORK_ROOT" "/var/lib/zerone-judge"
