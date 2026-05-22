@@ -9,7 +9,7 @@ RUN apt-get update \
        binutils \
        libc6-dev \
        make \
-       openjdk-17-jdk-headless \
+       default-jdk \
     \
     && mkdir -p /etc/apt/keyrings /etc/apt/sources.list.d \
     \
