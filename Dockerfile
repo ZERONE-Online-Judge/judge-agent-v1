@@ -16,6 +16,8 @@ RUN apt-get update \
        > /etc/apt/sources.list.d/isolate.sources \
     && apt-get update \
     && apt-get install -y --no-install-recommends isolate \
+    && apt-get install -y --no-install-recommends \
+       gcc g++ python3 default-jdk-headless \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
