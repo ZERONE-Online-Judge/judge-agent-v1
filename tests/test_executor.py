@@ -390,6 +390,6 @@ def test_isolate_mounts_java_symlink_chain(tmp_path: Path):
     executor = JudgeExecutor(tmp_path, sandbox_mode="isolate")
     args = executor._isolate_system_dir_args(["/usr/bin/java", "-version"])
 
-    assert "--dir=/usr=/usr:ro" in args
+    assert "--dir=/usr=/usr" in args
     if Path("/etc/alternatives").exists():
-        assert "--dir=/etc/alternatives=/etc/alternatives:ro" in args
+        assert "--dir=/etc/alternatives=/etc/alternatives" in args

@@ -879,7 +879,7 @@ class JudgeExecutor:
             if path in seen or not path.exists():
                 continue
             seen.add(path)
-            args.append(f"--dir={path}={path}:ro")
+            args.append(f"--dir={path}={path}")
         return args
 
     def _local_resource_limits(self):
