@@ -119,7 +119,7 @@ class JudgeExecutor:
                 job_dir,
                 "main.cpp",
                 source_code,
-                ["/usr/bin/g++", "-B/usr/bin", "-std=c++17", "-O2", "-static", "main.cpp", "-o", "main"],
+                ["/usr/bin/g++", "-B/usr/bin", "-std=c++17", "-O2", "main.cpp", "-o", "main"],
                 [str(job_dir / "main")]
             )
         if language == "c99":
@@ -127,7 +127,7 @@ class JudgeExecutor:
                 job_dir,
                 "main.c",
                 source_code,
-                ["/usr/bin/gcc", "-B/usr/bin", "-std=c99", "-O2", "-static", "main.c", "-o", "main"],
+                ["/usr/bin/gcc", "-B/usr/bin", "-std=c99", "-O2", "main.c", "-o", "main"],
                 [str(job_dir / "main")]
             )
         if language == "java8":
@@ -150,13 +150,14 @@ class JudgeExecutor:
     def _prepare_java(self, job_dir: Path, source_code: str) -> list[str] | ExecutionResult:
         (job_dir / "Main.java").write_text(source_code, encoding="utf-8")
         compiled = self._run_command(
-            ["javac", "--release", "8", "Main.java"],
+            ["/usr/bin/javac", "--release", "8", "Main.java"],
             job_dir,
-            timeout_seconds=20
+            timeout_seconds=20,
+            sandbox_mode_override="local",
         )
         if compiled.returncode != 0:
             return ExecutionResult("compile_error", None, compiled.stderr[-4000:] or compiled.stdout[-4000:])
-        return ["java", "-cp", str(job_dir), "Main"]
+        return ["/usr/bin/java", "-cp", str(job_dir), "Main"]
 
     def _run_final(self, command: list[str], job_dir: Path, job: dict) -> ExecutionResult:
         completed = self._run_command(command, job_dir, timeout_seconds=self._problem_time_limit_seconds(job), stdin="")
