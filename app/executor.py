@@ -798,18 +798,10 @@ class JudgeExecutor:
 
     def _isolate_memory_kb(self, box_id: int) -> int | None:
         try:
-            paths = glob.glob(
-                f"/sys/fs/cgroup/**/isolate/{box_id}/memory.current",
-                recursive=True,
-            )
-
-            if not paths:
+            path = Path(f"/sys/fs/cgroup/box-{box_id}/memory.current")
+            if not path.exists():
                 return None
-
-            value = Path(paths[0]).read_text().strip()
-
-            return int(value) // 1024
-
+            return int(path.read_text().strip()) // 1024
         except Exception:
             return None
 
