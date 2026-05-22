@@ -5,6 +5,7 @@ from pathlib import Path
 import base64
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import gzip
+import glob
 import itertools
 import json
 import os
@@ -663,6 +664,7 @@ class JudgeExecutor:
         stdin_file.write(stdin.encode("utf-8"))
         stdin_file.seek(0)
         started_at = time.monotonic()
+        peak_memory_kb: int | None = None
         try:
             init = subprocess.run(
                 ["/usr/bin/isolate", "--cg", f"--box-id={box_id}", "--init"],
@@ -693,14 +695,29 @@ class JudgeExecutor:
                 "--",
                 *command,
             ]
-            subprocess.run(
+            process = subprocess.Popen(
                 run_command,
                 stdin=stdin_file,
                 stdout=stdout_file,
                 stderr=stderr_file,
-                timeout=timeout_seconds + 5,
-                check=False,
             )
+            deadline = time.monotonic() + timeout_seconds + 5
+
+            while True:
+                returncode = process.poll()
+
+                sample = self._isolate_memory_kb(box_id)
+                peak_memory_kb = self._max_metric(peak_memory_kb, sample)
+
+                if returncode is not None:
+                    break
+
+                if time.monotonic() >= deadline:
+                    process.kill()
+                    break
+
+                time.sleep(0.01)
+
             meta = self._read_isolate_meta(meta_path)
             print(meta, flush=True)
             returncode = self._isolate_returncode(meta)
@@ -712,7 +729,7 @@ class JudgeExecutor:
                 stdout_file,
                 stderr_file,
                 started_at,
-                memory_kb=self._isolate_memory_kb(meta),
+                memory_kb=peak_memory_kb,
                 fallback_stderr=self._isolate_message(meta, returncode),
             )
             completed.runtime_ms = self._isolate_runtime_ms(meta) or completed.runtime_ms
@@ -779,10 +796,21 @@ class JudgeExecutor:
         except ValueError:
             return None
 
-    def _isolate_memory_kb(self, meta: dict[str, str]) -> int | None:
+    def _isolate_memory_kb(self, box_id: int) -> int | None:
         try:
-            return int(meta.get("cg-mem") or meta.get("max-rss") or "0") or None
-        except ValueError:
+            paths = glob.glob(
+                f"/sys/fs/cgroup/**/isolate/{box_id}/memory.current",
+                recursive=True,
+            )
+
+            if not paths:
+                return None
+
+            value = Path(paths[0]).read_text().strip()
+
+            return int(value) // 1024
+
+        except Exception:
             return None
 
     def _isolate_message(self, meta: dict[str, str], returncode: int) -> str:
