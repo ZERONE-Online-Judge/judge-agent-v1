@@ -119,7 +119,7 @@ class JudgeExecutor:
                 job_dir,
                 "main.cpp",
                 source_code,
-                ["/usr/bin/g++", "-B/usr/bin", "-std=c++17", "-O2", "main.cpp", "-o", "main"],
+                ["/usr/bin/g++", "-B/usr/bin", "-std=c++17", "-O2", "-static", "main.cpp", "-o", "main"],
                 [str(job_dir / "main")]
             )
         if language == "c99":
@@ -127,7 +127,7 @@ class JudgeExecutor:
                 job_dir,
                 "main.c",
                 source_code,
-                ["/usr/bin/gcc", "-B/usr/bin", "-std=c99", "-O2", "main.c", "-o", "main"],
+                ["/usr/bin/gcc", "-B/usr/bin", "-std=c99", "-O2", "-static", "main.c", "-o", "main"],
                 [str(job_dir / "main")]
             )
         if language == "java8":
@@ -664,7 +664,6 @@ class JudgeExecutor:
         stdin_file.write(stdin.encode("utf-8"))
         stdin_file.seek(0)
         started_at = time.monotonic()
-        peak_memory_kb: int | None = None
         try:
             init = subprocess.run(
                 ["/usr/bin/isolate", "--cg", f"--box-id={box_id}", "--init"],
@@ -695,29 +694,14 @@ class JudgeExecutor:
                 "--",
                 *command,
             ]
-            process = subprocess.Popen(
+            subprocess.run(
                 run_command,
                 stdin=stdin_file,
                 stdout=stdout_file,
                 stderr=stderr_file,
+                timeout=timeout_seconds + 5,
+                check=False,
             )
-            deadline = time.monotonic() + timeout_seconds + 5
-
-            while True:
-                returncode = process.poll()
-
-                sample = self._isolate_memory_kb(box_id)
-                peak_memory_kb = self._max_metric(peak_memory_kb, sample)
-
-                if returncode is not None:
-                    break
-
-                if time.monotonic() >= deadline:
-                    process.kill()
-                    break
-
-                time.sleep(0.01)
-
             meta = self._read_isolate_meta(meta_path)
             print(meta, flush=True)
             returncode = self._isolate_returncode(meta)
@@ -729,7 +713,7 @@ class JudgeExecutor:
                 stdout_file,
                 stderr_file,
                 started_at,
-                memory_kb=peak_memory_kb,
+                memory_kb=self._isolate_memory_kb(meta),
                 fallback_stderr=self._isolate_message(meta, returncode),
             )
             completed.runtime_ms = self._isolate_runtime_ms(meta) or completed.runtime_ms
@@ -796,13 +780,10 @@ class JudgeExecutor:
         except ValueError:
             return None
 
-    def _isolate_memory_kb(self, box_id: int) -> int | None:
+    def _isolate_memory_kb(self, meta: dict[str, str]) -> int | None:
         try:
-            path = Path(f"/sys/fs/cgroup/box-{box_id}/memory.current")
-            if not path.exists():
-                return None
-            return int(path.read_text().strip()) // 1024
-        except Exception:
+            return int(meta.get("max-rss") or "0") or None
+        except ValueError:
             return None
 
     def _isolate_message(self, meta: dict[str, str], returncode: int) -> str:
