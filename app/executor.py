@@ -712,9 +712,11 @@ class JudgeExecutor:
                 f"--cg-mem={memory_limit_mb * 1024}",
                 f"--fsize={max(1, self.output_limit_bytes // 1024)}",
                 f"--processes={settings.sandbox_pids_limit}",
+                *self._isolate_system_dir_args(command),
                 f"--dir={mount_root}={mount_root}:rw",
                 f"--chdir={cwd}",
                 "--env=PATH=/usr/bin:/bin",
+                "--env=JAVA_TOOL_OPTIONS=",
                 "--run",
                 "--",
                 *effective_command,
@@ -853,6 +855,32 @@ class JudgeExecutor:
         if memory_limit_mb <= 512:
             return max(48, min(96, memory_limit_mb // 4))
         return max(96, min(192, memory_limit_mb // 3))
+
+    def _isolate_system_dir_args(self, command: list[str]) -> list[str]:
+        executable = Path(command[0]).name if command else ""
+        paths = [
+            Path("/bin"),
+            Path("/lib"),
+            Path("/lib64"),
+            Path("/usr"),
+        ]
+        if executable == "java":
+            paths.extend(
+                [
+                    Path("/etc/alternatives"),
+                    Path("/etc/java-17-openjdk"),
+                    Path("/etc/java-21-openjdk"),
+                ]
+            )
+
+        args: list[str] = []
+        seen: set[Path] = set()
+        for path in paths:
+            if path in seen or not path.exists():
+                continue
+            seen.add(path)
+            args.append(f"--dir={path}={path}:ro")
+        return args
 
     def _local_resource_limits(self):
         try:
