@@ -363,7 +363,15 @@ class JudgeExecutor:
         source_path.write_bytes(checker_bytes)
         suffix = source_path.suffix.lower()
         if suffix == ".py":
-            return PreparedChecker(["python3.13" if shutil.which("python3.13") else "python3", str(source_path)], checker_dir)
+            return PreparedChecker(
+                [
+                    "/usr/local/bin/python3.13"
+                    if Path("/usr/local/bin/python3.13").exists()
+                    else "/usr/bin/python3",
+                    str(source_path),
+                ],
+                checker_dir,
+            )
         if suffix in {".cpp", ".cc", ".cxx"}:
             cached = self._ensure_cached_checker_binary(filename, suffix, checker_bytes, resource_blobs)
             if isinstance(cached, ExecutionResult):
@@ -646,7 +654,7 @@ class JudgeExecutor:
         started_at = time.monotonic()
         try:
             init = subprocess.run(
-                ["isolate", "--cg", f"--box-id={box_id}", "--init"],
+                ["/usr/bin/isolate", "--cg", f"--box-id={box_id}", "--init"],
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -657,7 +665,7 @@ class JudgeExecutor:
                 return subprocess.CompletedProcess(command, init.returncode, init.stdout, init.stderr)
 
             run_command = [
-                "isolate",
+                "/usr/bin/isolate",
                 "--cg",
                 f"--box-id={box_id}",
                 f"--meta={meta_path}",
@@ -710,7 +718,7 @@ class JudgeExecutor:
         finally:
             try:
                 subprocess.run(
-                    ["isolate", "--cg", f"--box-id={box_id}", "--cleanup"],
+                    ["/usr/bin/isolate", "--cg", f"--box-id={box_id}", "--cleanup"],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     timeout=5,
