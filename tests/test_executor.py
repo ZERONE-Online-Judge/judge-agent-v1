@@ -350,6 +350,8 @@ def test_isolate_meta_maps_timeout_to_tle(tmp_path: Path):
 
     assert executor._isolate_returncode({"status": "TO"}) == 124
     assert executor._isolate_message({"status": "TO"}, 124) == "time limit exceeded"
+    assert executor._isolate_returncode({"cg-oom-killed": "1"}) == 137
+    assert executor._isolate_message({"cg-oom-killed": "1"}, 137) == "memory limit exceeded"
 
 
 def test_isolate_meta_maps_signal_to_runtime_style_code(tmp_path: Path):
@@ -364,3 +366,18 @@ def test_isolate_meta_parses_runtime_and_memory(tmp_path: Path):
 
     assert executor._isolate_runtime_ms({"time": "0.017"}) == 17
     assert executor._isolate_memory_kb({"max-rss": "2048"}) == 2048
+    assert executor._isolate_memory_kb({"cg-mem": "4096", "max-rss": "2048"}) == 4096
+
+
+def test_java_command_gets_conservative_heap_limit(tmp_path: Path):
+    executor = JudgeExecutor(tmp_path, sandbox_mode="isolate")
+    command = executor._command_with_runtime_limits(
+        ["/usr/bin/java", "-cp", "/work/job", "Main"],
+        512,
+    )
+
+    assert command[1:4] == [
+        "-Xmx128m",
+        "-Xss256k",
+        "-XX:ReservedCodeCacheSize=32m",
+    ]

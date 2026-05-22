@@ -5,7 +5,6 @@ from pathlib import Path
 import base64
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import gzip
-import glob
 import itertools
 import json
 import os
@@ -160,7 +159,13 @@ class JudgeExecutor:
         return ["/usr/bin/java", "-cp", str(job_dir), "Main"]
 
     def _run_final(self, command: list[str], job_dir: Path, job: dict) -> ExecutionResult:
-        completed = self._run_command(command, job_dir, timeout_seconds=self._problem_time_limit_seconds(job), stdin="")
+        completed = self._run_command(
+            command,
+            job_dir,
+            timeout_seconds=self._problem_time_limit_seconds(job),
+            stdin="",
+            memory_limit_mb=self._problem_memory_limit_mb(job),
+        )
         if completed.returncode == 0:
             return self._execution_result("accepted", self._problem_max_score(job), None, completed=completed)
         if completed.returncode == 124:
@@ -275,19 +280,10 @@ class JudgeExecutor:
             stdin=normalized_input,
             sandbox_container_id=sandbox_container_id,
             sandbox_mount_root=job_dir if self.sandbox_mode == "isolate" else None,
+            memory_limit_mb=self._testcase_memory_limit_mb(job, testcase),
         )
         runtime_ms = getattr(completed, "runtime_ms", None)
         memory_kb = getattr(completed, "memory_kb", None)
-
-        # temp logs for debugging
-        print(
-            f"[judge-agent] testcase={order} "
-            f"returncode={completed.returncode} "
-            f"runtime_ms={runtime_ms} "
-            f"memory_kb={memory_kb} "
-            f"cmd={command}",
-            flush=True,
-        )
 
         if completed.returncode == 124:
             return TestcaseRunResult(order, self._execution_result("time_limit_exceeded", 0, f"time limit exceeded on testcase {order}", order, runtime_ms=runtime_ms, memory_kb=memory_kb))
@@ -573,6 +569,19 @@ class JudgeExecutor:
             return max(float(value) / 1000, 0.1)
         return self._problem_time_limit_seconds(job)
 
+    def _problem_memory_limit_mb(self, job: dict) -> int:
+        problem = job.get("problem") or {}
+        value = problem.get("memory_limit_mb")
+        if value:
+            return max(int(value), 16)
+        return settings.sandbox_memory_mb
+
+    def _testcase_memory_limit_mb(self, job: dict, testcase: dict) -> int:
+        value = testcase.get("memory_limit_mb_override")
+        if value:
+            return max(int(value), 16)
+        return self._problem_memory_limit_mb(job)
+
     def _normalize_output(self, value: str) -> str:
         return "\n".join(line.rstrip() for line in value.replace("\r\n", "\n").strip().split("\n"))
 
@@ -585,6 +594,7 @@ class JudgeExecutor:
         sandbox_mode_override: str | None = None,
         sandbox_container_id: str | None = None,
         sandbox_mount_root: Path | None = None,
+        memory_limit_mb: int | None = None,
     ) -> subprocess.CompletedProcess[str]:
         mode = sandbox_mode_override or self.sandbox_mode
         if mode == "isolate":
@@ -594,6 +604,7 @@ class JudgeExecutor:
                 timeout_seconds,
                 stdin,
                 sandbox_mount_root or cwd,
+                memory_limit_mb or settings.sandbox_memory_mb,
             )
         effective_command = command
         watchdog_timeout_seconds = timeout_seconds
@@ -654,6 +665,7 @@ class JudgeExecutor:
         timeout_seconds: float,
         stdin: str,
         mount_root: Path,
+        memory_limit_mb: int,
     ) -> subprocess.CompletedProcess[str]:
         cwd.mkdir(parents=True, exist_ok=True)
         mount_root.mkdir(parents=True, exist_ok=True)
@@ -677,6 +689,7 @@ class JudgeExecutor:
             if init.returncode != 0:
                 return subprocess.CompletedProcess(command, init.returncode, init.stdout, init.stderr)
 
+            effective_command = self._command_with_runtime_limits(command, memory_limit_mb)
             run_command = [
                 "/usr/bin/isolate",
                 "--cg",
@@ -685,7 +698,7 @@ class JudgeExecutor:
                 f"--time={timeout_seconds}",
                 f"--wall-time={timeout_seconds + 1}",
                 "--extra-time=0",
-                f"--mem={settings.sandbox_memory_mb * 1024}",
+                f"--cg-mem={memory_limit_mb * 1024}",
                 f"--fsize={max(1, self.output_limit_bytes // 1024)}",
                 f"--processes={settings.sandbox_pids_limit}",
                 f"--dir={mount_root}={mount_root}:rw",
@@ -693,9 +706,9 @@ class JudgeExecutor:
                 "--env=PATH=/usr/bin:/bin",
                 "--run",
                 "--",
-                *command,
+                *effective_command,
             ]
-            subprocess.run(
+            isolated = subprocess.run(
                 run_command,
                 stdin=stdin_file,
                 stdout=stdout_file,
@@ -704,7 +717,15 @@ class JudgeExecutor:
                 check=False,
             )
             meta = self._read_isolate_meta(meta_path)
-            print(meta, flush=True)
+            if not meta and isolated.returncode != 0:
+                return self._completed_process(
+                    command,
+                    127,
+                    stdout_file,
+                    stderr_file,
+                    started_at,
+                    fallback_stderr="isolate failed without execution metadata",
+                )
             returncode = self._isolate_returncode(meta)
             if self._file_size(stdout_file) > self.output_limit_bytes or self._file_size(stderr_file) > self.output_limit_bytes:
                 returncode = 125
@@ -762,6 +783,8 @@ class JudgeExecutor:
         return meta
 
     def _isolate_returncode(self, meta: dict[str, str]) -> int:
+        if "cg-oom-killed" in meta:
+            return 137
         status = meta.get("status", "")
         if status == "TO":
             return 124
@@ -783,14 +806,39 @@ class JudgeExecutor:
 
     def _isolate_memory_kb(self, meta: dict[str, str]) -> int | None:
         try:
-            return int(meta.get("max-rss") or "0") or None
+            return int(meta.get("cg-mem") or meta.get("max-rss") or "0") or None
         except ValueError:
             return None
 
     def _isolate_message(self, meta: dict[str, str], returncode: int) -> str:
         if returncode == 124:
             return "time limit exceeded"
+        if returncode == 137 or "cg-oom-killed" in meta:
+            return "memory limit exceeded"
         return meta.get("message", "")
+
+    def _command_with_runtime_limits(self, command: list[str], memory_limit_mb: int) -> list[str]:
+        if not command:
+            return command
+        executable = Path(command[0]).name
+        if executable != "java":
+            return command
+
+        heap_mb = self._java_heap_mb(memory_limit_mb)
+        return [
+            command[0],
+            f"-Xmx{heap_mb}m",
+            "-Xss256k",
+            "-XX:ReservedCodeCacheSize=32m",
+            *command[1:],
+        ]
+
+    def _java_heap_mb(self, memory_limit_mb: int) -> int:
+        if memory_limit_mb <= 128:
+            return max(32, memory_limit_mb // 2)
+        if memory_limit_mb <= 512:
+            return max(64, min(128, memory_limit_mb // 2))
+        return max(128, min(memory_limit_mb - 256, int(memory_limit_mb * 0.6)))
 
     def _local_resource_limits(self):
         try:
@@ -837,7 +885,7 @@ class JudgeExecutor:
         fallback_memory_kb = self._children_maxrss_kb()
         if baseline_child_rss_kb is not None and fallback_memory_kb is not None and fallback_memory_kb <= baseline_child_rss_kb:
             fallback_memory_kb = None
-        completed.memory_kb = memory_kb #if memory_kb is not None else fallback_memory_kb
+        completed.memory_kb = memory_kb if memory_kb is not None else fallback_memory_kb
         return completed
 
     def _children_maxrss_kb(self) -> int | None:
