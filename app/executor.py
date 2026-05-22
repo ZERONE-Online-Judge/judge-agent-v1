@@ -149,7 +149,17 @@ class JudgeExecutor:
     def _prepare_java(self, job_dir: Path, source_code: str) -> list[str] | ExecutionResult:
         (job_dir / "Main.java").write_text(source_code, encoding="utf-8")
         compiled = self._run_command(
-            ["/usr/bin/javac", "--release", "8", "Main.java"],
+            [
+                "/usr/bin/javac",
+                "-J-Xmx96m",
+                "-J-Xss256k",
+                "-J-XX:ReservedCodeCacheSize=32m",
+                "-J-XX:CompressedClassSpaceSize=16m",
+                "-J-XX:MaxMetaspaceSize=64m",
+                "--release",
+                "8",
+                "Main.java",
+            ],
             job_dir,
             timeout_seconds=20,
             sandbox_mode_override="local",
@@ -830,6 +840,8 @@ class JudgeExecutor:
             f"-Xmx{heap_mb}m",
             "-Xss256k",
             "-XX:ReservedCodeCacheSize=32m",
+            "-XX:CompressedClassSpaceSize=16m",
+            "-XX:MaxMetaspaceSize=64m",
             *command[1:],
         ]
 
