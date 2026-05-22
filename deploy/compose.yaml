@@ -17,6 +17,7 @@ services:
       - /run/isolate:/run/isolate:rw
     privileged: true
     pids_limit: 1024
+    cgroup: host
     mem_limit: ${JUDGE_AGENT_CONTAINER_MEMORY:-20g}
     cpus: ${JUDGE_AGENT_CONTAINER_CPUS:-10}
     restart: unless-stopped
