@@ -823,7 +823,7 @@ class JudgeExecutor:
         fallback_memory_kb = self._children_maxrss_kb()
         if baseline_child_rss_kb is not None and fallback_memory_kb is not None and fallback_memory_kb <= baseline_child_rss_kb:
             fallback_memory_kb = None
-        completed.memory_kb = self._max_metric(memory_kb, fallback_memory_kb)
+        completed.memory_kb = memory_kb if memory_kb is not None else fallback_memory_kb
         return completed
 
     def _children_maxrss_kb(self) -> int | None:
