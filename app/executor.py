@@ -702,6 +702,7 @@ class JudgeExecutor:
                 check=False,
             )
             meta = self._read_isolate_meta(meta_path)
+            print(meta, flush=True)
             returncode = self._isolate_returncode(meta)
             if self._file_size(stdout_file) > self.output_limit_bytes or self._file_size(stderr_file) > self.output_limit_bytes:
                 returncode = 125
