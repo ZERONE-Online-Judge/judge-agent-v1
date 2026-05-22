@@ -835,10 +835,10 @@ class JudgeExecutor:
 
     def _java_heap_mb(self, memory_limit_mb: int) -> int:
         if memory_limit_mb <= 128:
-            return max(32, memory_limit_mb // 2)
+            return 32
         if memory_limit_mb <= 512:
-            return max(64, min(128, memory_limit_mb // 2))
-        return max(128, min(memory_limit_mb - 256, int(memory_limit_mb * 0.6)))
+            return max(48, min(96, memory_limit_mb // 4))
+        return max(96, min(192, memory_limit_mb // 3))
 
     def _local_resource_limits(self):
         try:
