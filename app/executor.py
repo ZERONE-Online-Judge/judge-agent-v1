@@ -276,6 +276,17 @@ class JudgeExecutor:
         )
         runtime_ms = getattr(completed, "runtime_ms", None)
         memory_kb = getattr(completed, "memory_kb", None)
+
+        # temp logs for debugging
+        print(
+            f"[judge-agent] testcase={order} "
+            f"returncode={completed.returncode} "
+            f"runtime_ms={runtime_ms} "
+            f"memory_kb={memory_kb} "
+            f"cmd={command}",
+            flush=True,
+        )
+
         if completed.returncode == 124:
             return TestcaseRunResult(order, self._execution_result("time_limit_exceeded", 0, f"time limit exceeded on testcase {order}", order, runtime_ms=runtime_ms, memory_kb=memory_kb))
         if completed.returncode == 125:
@@ -769,7 +780,7 @@ class JudgeExecutor:
 
     def _isolate_memory_kb(self, meta: dict[str, str]) -> int | None:
         try:
-            return int(meta.get("max-rss") or "0") or None
+            return int(meta.get("cg-mem") or meta.get("max-rss") or "0") or None
         except ValueError:
             return None
 
@@ -823,7 +834,7 @@ class JudgeExecutor:
         fallback_memory_kb = self._children_maxrss_kb()
         if baseline_child_rss_kb is not None and fallback_memory_kb is not None and fallback_memory_kb <= baseline_child_rss_kb:
             fallback_memory_kb = None
-        completed.memory_kb = memory_kb if memory_kb is not None else fallback_memory_kb
+        completed.memory_kb = memory_kb #if memory_kb is not None else fallback_memory_kb
         return completed
 
     def _children_maxrss_kb(self) -> int | None:
