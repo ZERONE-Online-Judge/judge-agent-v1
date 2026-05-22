@@ -140,7 +140,7 @@ class JudgeExecutor:
 
     def _compile(self, job_dir: Path, filename: str, source_code: str, compile_command: list[str], run_command: list[str]) -> list[str] | ExecutionResult:
         (job_dir / filename).write_text(source_code, encoding="utf-8")
-        compiled = self._run_command(compile_command, job_dir, timeout_seconds=20)
+        compiled = self._run_command(compile_command, job_dir, timeout_seconds=20, sandbox_mode_override="local")
 
         if compiled.returncode != 0:
             return ExecutionResult("compile_error", None, compiled.stderr[-4000:] or compiled.stdout[-4000:])
@@ -435,7 +435,7 @@ class JudgeExecutor:
             compile_cmd,
             cache_dir,
             timeout_seconds=20,
-            sandbox_mode_override=self.checker_sandbox_mode,
+            sandbox_mode_override="local"
         )
         if compiled.returncode != 0:
             return ExecutionResult("system_error", None, "checker compile failed: " + (compiled.stderr or compiled.stdout)[-4000:])
