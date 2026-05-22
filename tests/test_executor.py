@@ -376,9 +376,10 @@ def test_java_command_gets_conservative_heap_limit(tmp_path: Path):
         512,
     )
 
-    assert command[1:6] == [
+    assert command[1:7] == [
         "-Xmx96m",
         "-Xss256k",
+        "-XX:+UseSerialGC",
         "-XX:ReservedCodeCacheSize=32m",
         "-XX:CompressedClassSpaceSize=16m",
         "-XX:MaxMetaspaceSize=64m",
