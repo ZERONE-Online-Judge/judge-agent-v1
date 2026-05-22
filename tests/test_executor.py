@@ -365,3 +365,22 @@ def test_docker_sandbox_command_can_mount_job_root_for_case_workdir(tmp_path: Pa
     assert f"{tmp_path}:{tmp_path}:rw" in command
     assert "--workdir" in command
     assert str(case_dir) in command
+
+
+def test_sandbox_runtime_marker_is_removed_from_stderr(tmp_path: Path):
+    executor = JudgeExecutor(tmp_path, sandbox_mode="docker")
+    stderr, runtime_ms = executor._extract_sandbox_runtime(
+        "warning\n__ZOJ_RUNTIME_MS__=17\n",
+    )
+
+    assert stderr == "warning"
+    assert runtime_ms == 17
+
+
+def test_sandbox_timed_command_wraps_original_command(tmp_path: Path):
+    executor = JudgeExecutor(tmp_path, sandbox_mode="docker")
+    command = executor._sandbox_timed_command(["/work/job/main", "--flag"], 1.5)
+
+    assert "-c" in command
+    assert '["/work/job/main", "--flag"]' in command
+    assert "1.5" in command

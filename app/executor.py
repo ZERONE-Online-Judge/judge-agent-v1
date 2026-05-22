@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import gzip
 import json
 import os
+import re
 import signal
 import shutil
 import subprocess
@@ -18,6 +19,12 @@ from urllib.request import urlopen
 from collections.abc import Callable
 
 from app.settings import settings
+
+
+SANDBOX_RUNTIME_MARKER = "__ZOJ_RUNTIME_MS__="
+SANDBOX_RUNTIME_PATTERN = re.compile(
+    rf"\n?{re.escape(SANDBOX_RUNTIME_MARKER)}(?P<runtime>\d+)\n?"
+)
 
 
 @dataclass(frozen=True)
@@ -554,16 +561,19 @@ class JudgeExecutor:
     ) -> subprocess.CompletedProcess[str]:
         mode = sandbox_mode_override or self.sandbox_mode
         if mode == "docker":
-            effective_command = self._sandbox_exec_command(command, cwd, sandbox_container_id) if sandbox_container_id else self._sandbox_command(command, cwd, sandbox_mount_root or cwd)
+            wrapped_command = self._sandbox_timed_command(command, timeout_seconds)
+            effective_command = self._sandbox_exec_command(wrapped_command, cwd, sandbox_container_id) if sandbox_container_id else self._sandbox_command(wrapped_command, cwd, sandbox_mount_root or cwd)
+            watchdog_timeout_seconds = timeout_seconds + 10
         else:
             effective_command = command
+            watchdog_timeout_seconds = timeout_seconds
         cwd.mkdir(parents=True, exist_ok=True)
         stdin_file = tempfile.TemporaryFile()
         stdout_file = tempfile.TemporaryFile()
         stderr_file = tempfile.TemporaryFile()
         stdin_file.write(stdin.encode("utf-8"))
         stdin_file.seek(0)
-        deadline = time.monotonic() + timeout_seconds
+        deadline = time.monotonic() + watchdog_timeout_seconds
         started_at = time.monotonic()
         peak_memory_kb: int | None = None
         last_memory_sample_at = 0.0
@@ -589,16 +599,16 @@ class JudgeExecutor:
                 if self._file_size(stdout_file) > self.output_limit_bytes or self._file_size(stderr_file) > self.output_limit_bytes:
                     if returncode is None:
                         self._terminate_process(process)
-                    return self._completed_process(command, 125, stdout_file, stderr_file, started_at, peak_memory_kb, baseline_child_rss_kb)
+                    return self._completed_process(command, 125, stdout_file, stderr_file, started_at, peak_memory_kb, baseline_child_rss_kb, prefer_sandbox_runtime=mode == "docker")
                 if returncode is not None:
                     sample = self._memory_sample_kb(process.pid, mode, sandbox_container_id)
                     peak_memory_kb = self._max_metric(peak_memory_kb, sample)
-                    return self._completed_process(command, returncode, stdout_file, stderr_file, started_at, peak_memory_kb, baseline_child_rss_kb)
+                    return self._completed_process(command, returncode, stdout_file, stderr_file, started_at, peak_memory_kb, baseline_child_rss_kb, prefer_sandbox_runtime=mode == "docker")
                 if now >= deadline:
                     self._terminate_process(process)
                     sample = self._memory_sample_kb(process.pid, mode, sandbox_container_id)
                     peak_memory_kb = self._max_metric(peak_memory_kb, sample)
-                    return self._completed_process(command, 124, stdout_file, stderr_file, started_at, peak_memory_kb, baseline_child_rss_kb, fallback_stderr="time limit exceeded")
+                    return self._completed_process(command, 124, stdout_file, stderr_file, started_at, peak_memory_kb, baseline_child_rss_kb, fallback_stderr="time limit exceeded", prefer_sandbox_runtime=mode == "docker")
                 time.sleep(0.01)
         except FileNotFoundError as error:
             return subprocess.CompletedProcess(command, 127, "", str(error))
@@ -636,6 +646,30 @@ class JudgeExecutor:
             str(cwd),
             settings.sandbox_image,
             *command,
+        ]
+
+    def _sandbox_timed_command(self, command: list[str], timeout_seconds: float) -> list[str]:
+        script = (
+            "import json, subprocess, sys, time\n"
+            "command = json.loads(sys.argv[1])\n"
+            "timeout_seconds = float(sys.argv[2])\n"
+            "started_at = time.monotonic()\n"
+            "try:\n"
+            "    completed = subprocess.run(command, stdin=sys.stdin.buffer, timeout=timeout_seconds)\n"
+            "    returncode = completed.returncode\n"
+            "except subprocess.TimeoutExpired:\n"
+            "    returncode = 124\n"
+            "    print('time limit exceeded', file=sys.stderr)\n"
+            "runtime_ms = max(0, int((time.monotonic() - started_at) * 1000))\n"
+            f"print('{SANDBOX_RUNTIME_MARKER}' + str(runtime_ms), file=sys.stderr)\n"
+            "raise SystemExit(returncode)\n"
+        )
+        return [
+            "python3.13" if shutil.which("python3.13") else "python3",
+            "-c",
+            script,
+            json.dumps(command),
+            str(timeout_seconds),
         ]
 
     def _sandbox_exec_command(self, command: list[str], cwd: Path, container_id: str) -> list[str]:
@@ -728,16 +762,32 @@ class JudgeExecutor:
         memory_kb: int | None = None,
         baseline_child_rss_kb: int | None = None,
         fallback_stderr: str = "",
+        prefer_sandbox_runtime: bool = False,
     ) -> subprocess.CompletedProcess[str]:
         stdout = self._read_limited_text(stdout_file)
         stderr = self._read_limited_text(stderr_file) or fallback_stderr
+        sandbox_runtime_ms: int | None = None
+        if prefer_sandbox_runtime and stderr:
+            stderr, sandbox_runtime_ms = self._extract_sandbox_runtime(stderr)
         completed = subprocess.CompletedProcess(command, returncode, stdout, stderr)
-        completed.runtime_ms = max(0, int((time.monotonic() - started_at) * 1000)) if started_at is not None else None
+        wall_runtime_ms = max(0, int((time.monotonic() - started_at) * 1000)) if started_at is not None else None
+        completed.runtime_ms = sandbox_runtime_ms if sandbox_runtime_ms is not None else wall_runtime_ms
         fallback_memory_kb = self._children_maxrss_kb()
         if baseline_child_rss_kb is not None and fallback_memory_kb is not None and fallback_memory_kb <= baseline_child_rss_kb:
             fallback_memory_kb = None
         completed.memory_kb = self._max_metric(memory_kb, fallback_memory_kb)
         return completed
+
+    def _extract_sandbox_runtime(self, stderr: str) -> tuple[str, int | None]:
+        runtime_ms: int | None = None
+
+        def remember_runtime(match: re.Match[str]) -> str:
+            nonlocal runtime_ms
+            runtime_ms = int(match.group("runtime"))
+            return "\n" if match.group(0).startswith("\n") else ""
+
+        cleaned = SANDBOX_RUNTIME_PATTERN.sub(remember_runtime, stderr)
+        return cleaned.rstrip("\n"), runtime_ms
 
     def _children_maxrss_kb(self) -> int | None:
         try:
