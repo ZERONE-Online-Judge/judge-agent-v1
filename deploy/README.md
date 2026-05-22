@@ -61,4 +61,5 @@ cd judge_agent_v1/deploy
 
 - 이 구성은 중앙 백엔드/MinIO를 사용합니다.
 - judge VM에는 MinIO를 띄울 필요가 없습니다.
+- 샌드박스는 `isolate` 고정입니다. compose는 isolate 실행을 위해 privileged 컨테이너와 cgroup 마운트를 사용합니다.
 - 루트 `deploy/compose.judge-agent.yaml`은 제거되었고, judge-agent 배포는 이 폴더 기준으로만 사용합니다.

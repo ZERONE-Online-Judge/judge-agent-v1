@@ -16,12 +16,12 @@ class Settings:
     long_poll_seconds: float = float(os.getenv("JUDGE_LONG_POLL_SECONDS", "20"))
     heartbeat_interval_seconds: float = float(os.getenv("JUDGE_HEARTBEAT_INTERVAL_SECONDS", "2"))
     default_time_limit_seconds: float = float(os.getenv("JUDGE_DEFAULT_TIME_LIMIT_SECONDS", "3"))
-    sandbox_mode: str = os.getenv("JUDGE_SANDBOX_MODE", "local")
-    checker_sandbox_mode: str = os.getenv("JUDGE_CHECKER_SANDBOX_MODE", os.getenv("JUDGE_SANDBOX_MODE", "local"))
-    sandbox_image: str = os.getenv("JUDGE_SANDBOX_IMAGE", "zerone-judge-agent:latest")
-    sandbox_cpus: float = float(os.getenv("JUDGE_SANDBOX_CPUS", "1"))
+    sandbox_mode: str = os.getenv("JUDGE_SANDBOX_MODE", "isolate")
+    checker_sandbox_mode: str = os.getenv("JUDGE_CHECKER_SANDBOX_MODE", os.getenv("JUDGE_SANDBOX_MODE", "isolate"))
     sandbox_memory_mb: int = int(os.getenv("JUDGE_SANDBOX_MEMORY_MB", "512"))
     sandbox_pids_limit: int = int(os.getenv("JUDGE_SANDBOX_PIDS_LIMIT", "128"))
+    isolate_box_id_base: int = int(os.getenv("JUDGE_ISOLATE_BOX_ID_BASE", "0"))
+    isolate_box_id_count: int = int(os.getenv("JUDGE_ISOLATE_BOX_ID_COUNT", "1000"))
     output_limit_bytes: int = int(os.getenv("JUDGE_OUTPUT_LIMIT_BYTES", str(1024 * 1024)))
     run_once: bool = os.getenv("JUDGE_RUN_ONCE", "false").lower() == "true"
 

@@ -5,9 +5,9 @@ from pathlib import Path
 import base64
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import gzip
+import itertools
 import json
 import os
-import re
 import signal
 import shutil
 import subprocess
@@ -21,10 +21,7 @@ from collections.abc import Callable
 from app.settings import settings
 
 
-SANDBOX_RUNTIME_MARKER = "__ZOJ_RUNTIME_MS__="
-SANDBOX_RUNTIME_PATTERN = re.compile(
-    rf"\n?{re.escape(SANDBOX_RUNTIME_MARKER)}(?P<runtime>\d+)\n?"
-)
+_isolate_box_counter = itertools.count()
 
 
 @dataclass(frozen=True)
@@ -58,11 +55,13 @@ class JudgeExecutor:
         self,
         work_root: Path | None = None,
         sandbox_mode: str | None = None,
+        checker_sandbox_mode: str | None = None,
         output_limit_bytes: int | None = None,
         testcase_parallelism: int | None = None,
     ) -> None:
         self.work_root = work_root or settings.work_root
         self.sandbox_mode = sandbox_mode or settings.sandbox_mode
+        self.checker_sandbox_mode = checker_sandbox_mode or sandbox_mode or settings.checker_sandbox_mode
         self.output_limit_bytes = output_limit_bytes or settings.output_limit_bytes
         self.testcase_parallelism = max(1, testcase_parallelism or settings.testcase_parallelism)
         self.checker_cache_root = self.work_root / "checker-cache"
@@ -171,78 +170,69 @@ class JudgeExecutor:
         max_memory_kb: int | None = None
         worker_count = min(self.testcase_parallelism, total)
         sandbox_container_id: str | None = None
-        if self.sandbox_mode == "docker" and worker_count == 1:
-            started = self._start_sandbox_container(job_dir)
-            if isinstance(started, ExecutionResult):
-                return started
-            sandbox_container_id = started
         if progress:
             progress("judging", 0, total)
-        try:
-            if worker_count == 1:
-                for index, testcase in enumerate(testcases, start=1):
-                    result = self._run_single_testcase(
-                        command,
-                        job_dir,
-                        job,
-                        testcase,
-                        checker,
-                        source_hash,
-                        sandbox_container_id,
-                    )
-                    max_runtime_ms = self._max_metric(max_runtime_ms, result.result.runtime_ms)
-                    max_memory_kb = self._max_metric(max_memory_kb, result.result.memory_kb)
-                    if result.result.status != "accepted":
-                        return self._execution_result(
-                            result.result.status,
-                            result.result.score,
-                            result.result.message,
-                            result.result.failed_testcase_order,
-                            runtime_ms=max_runtime_ms,
-                            memory_kb=max_memory_kb,
-                        )
-                    if progress:
-                        progress("judging", index, total)
-                return self._execution_result("accepted", self._problem_max_score(job), None, runtime_ms=max_runtime_ms, memory_kb=max_memory_kb)
-
-            completed_count = 0
-            results: list[TestcaseRunResult] = []
-            with ThreadPoolExecutor(max_workers=worker_count) as pool:
-                futures = [
-                    pool.submit(
-                        self._run_single_testcase,
-                        command,
-                        job_dir,
-                        job,
-                        testcase,
-                        checker,
-                        source_hash,
-                        sandbox_container_id,
-                    )
-                    for testcase in testcases
-                ]
-                for future in as_completed(futures):
-                    result = future.result()
-                    results.append(result)
-                    max_runtime_ms = self._max_metric(max_runtime_ms, result.result.runtime_ms)
-                    max_memory_kb = self._max_metric(max_memory_kb, result.result.memory_kb)
-                    completed_count += 1
-                    if progress:
-                        progress("judging", completed_count, total)
-            for item in sorted(results, key=lambda value: value.order):
-                if item.result.status != "accepted":
+        if worker_count == 1:
+            for index, testcase in enumerate(testcases, start=1):
+                result = self._run_single_testcase(
+                    command,
+                    job_dir,
+                    job,
+                    testcase,
+                    checker,
+                    source_hash,
+                    sandbox_container_id,
+                )
+                max_runtime_ms = self._max_metric(max_runtime_ms, result.result.runtime_ms)
+                max_memory_kb = self._max_metric(max_memory_kb, result.result.memory_kb)
+                if result.result.status != "accepted":
                     return self._execution_result(
-                        item.result.status,
-                        item.result.score,
-                        item.result.message,
-                        item.result.failed_testcase_order,
+                        result.result.status,
+                        result.result.score,
+                        result.result.message,
+                        result.result.failed_testcase_order,
                         runtime_ms=max_runtime_ms,
                         memory_kb=max_memory_kb,
                     )
+                if progress:
+                    progress("judging", index, total)
             return self._execution_result("accepted", self._problem_max_score(job), None, runtime_ms=max_runtime_ms, memory_kb=max_memory_kb)
-        finally:
-            if sandbox_container_id:
-                self._stop_sandbox_container(sandbox_container_id)
+
+        completed_count = 0
+        results: list[TestcaseRunResult] = []
+        with ThreadPoolExecutor(max_workers=worker_count) as pool:
+            futures = [
+                pool.submit(
+                    self._run_single_testcase,
+                    command,
+                    job_dir,
+                    job,
+                    testcase,
+                    checker,
+                    source_hash,
+                    sandbox_container_id,
+                )
+                for testcase in testcases
+            ]
+            for future in as_completed(futures):
+                result = future.result()
+                results.append(result)
+                max_runtime_ms = self._max_metric(max_runtime_ms, result.result.runtime_ms)
+                max_memory_kb = self._max_metric(max_memory_kb, result.result.memory_kb)
+                completed_count += 1
+                if progress:
+                    progress("judging", completed_count, total)
+        for item in sorted(results, key=lambda value: value.order):
+            if item.result.status != "accepted":
+                return self._execution_result(
+                    item.result.status,
+                    item.result.score,
+                    item.result.message,
+                    item.result.failed_testcase_order,
+                    runtime_ms=max_runtime_ms,
+                    memory_kb=max_memory_kb,
+                )
+        return self._execution_result("accepted", self._problem_max_score(job), None, runtime_ms=max_runtime_ms, memory_kb=max_memory_kb)
 
     def _run_single_testcase(
         self,
@@ -266,7 +256,7 @@ class JudgeExecutor:
             timeout_seconds=self._testcase_time_limit_seconds(job, testcase),
             stdin=normalized_input,
             sandbox_container_id=sandbox_container_id,
-            sandbox_mount_root=job_dir if self.sandbox_mode == "docker" and sandbox_container_id is None else None,
+            sandbox_mount_root=job_dir if self.sandbox_mode == "isolate" else None,
         )
         runtime_ms = getattr(completed, "runtime_ms", None)
         memory_kb = getattr(completed, "memory_kb", None)
@@ -289,7 +279,7 @@ class JudgeExecutor:
                 completed.stdout,
                 case_label,
                 source_hash,
-                sandbox_container_id=sandbox_container_id if settings.checker_sandbox_mode == "docker" else None,
+                sandbox_container_id=None,
             )
             if checker_result:
                 return TestcaseRunResult(order, self._execution_result(checker_result.status, checker_result.score, checker_result.message, checker_result.failed_testcase_order, runtime_ms=runtime_ms, memory_kb=memory_kb))
@@ -421,7 +411,7 @@ class JudgeExecutor:
             compile_cmd,
             cache_dir,
             timeout_seconds=20,
-            sandbox_mode_override=settings.checker_sandbox_mode,
+            sandbox_mode_override=self.checker_sandbox_mode,
         )
         if compiled.returncode != 0:
             return ExecutionResult("system_error", None, "checker compile failed: " + (compiled.stderr or compiled.stdout)[-4000:])
@@ -455,7 +445,7 @@ class JudgeExecutor:
             checker.command + [str(input_path), str(actual_path), str(expected_path)],
             checker.cwd,
             timeout_seconds=10,
-            sandbox_mode_override=settings.checker_sandbox_mode,
+            sandbox_mode_override=self.checker_sandbox_mode,
             sandbox_container_id=sandbox_container_id,
         )
         if completed.returncode == 0:
@@ -560,13 +550,16 @@ class JudgeExecutor:
         sandbox_mount_root: Path | None = None,
     ) -> subprocess.CompletedProcess[str]:
         mode = sandbox_mode_override or self.sandbox_mode
-        if mode == "docker":
-            wrapped_command = self._sandbox_timed_command(command, timeout_seconds)
-            effective_command = self._sandbox_exec_command(wrapped_command, cwd, sandbox_container_id) if sandbox_container_id else self._sandbox_command(wrapped_command, cwd, sandbox_mount_root or cwd)
-            watchdog_timeout_seconds = timeout_seconds + 10
-        else:
-            effective_command = command
-            watchdog_timeout_seconds = timeout_seconds
+        if mode == "isolate":
+            return self._run_isolate_command(
+                command,
+                cwd,
+                timeout_seconds,
+                stdin,
+                sandbox_mount_root or cwd,
+            )
+        effective_command = command
+        watchdog_timeout_seconds = timeout_seconds
         cwd.mkdir(parents=True, exist_ok=True)
         stdin_file = tempfile.TemporaryFile()
         stdout_file = tempfile.TemporaryFile()
@@ -579,7 +572,7 @@ class JudgeExecutor:
         last_memory_sample_at = 0.0
         baseline_child_rss_kb = self._children_maxrss_kb()
         try:
-            apply_local_limits = mode == "local" and not (command and command[0] == "docker")
+            apply_local_limits = mode == "local"
             process = subprocess.Popen(
                 effective_command,
                 cwd=cwd,
@@ -599,16 +592,16 @@ class JudgeExecutor:
                 if self._file_size(stdout_file) > self.output_limit_bytes or self._file_size(stderr_file) > self.output_limit_bytes:
                     if returncode is None:
                         self._terminate_process(process)
-                    return self._completed_process(command, 125, stdout_file, stderr_file, started_at, peak_memory_kb, baseline_child_rss_kb, prefer_sandbox_runtime=mode == "docker")
+                    return self._completed_process(command, 125, stdout_file, stderr_file, started_at, peak_memory_kb, baseline_child_rss_kb)
                 if returncode is not None:
                     sample = self._memory_sample_kb(process.pid, mode, sandbox_container_id)
                     peak_memory_kb = self._max_metric(peak_memory_kb, sample)
-                    return self._completed_process(command, returncode, stdout_file, stderr_file, started_at, peak_memory_kb, baseline_child_rss_kb, prefer_sandbox_runtime=mode == "docker")
+                    return self._completed_process(command, returncode, stdout_file, stderr_file, started_at, peak_memory_kb, baseline_child_rss_kb)
                 if now >= deadline:
                     self._terminate_process(process)
                     sample = self._memory_sample_kb(process.pid, mode, sandbox_container_id)
                     peak_memory_kb = self._max_metric(peak_memory_kb, sample)
-                    return self._completed_process(command, 124, stdout_file, stderr_file, started_at, peak_memory_kb, baseline_child_rss_kb, fallback_stderr="time limit exceeded", prefer_sandbox_runtime=mode == "docker")
+                    return self._completed_process(command, 124, stdout_file, stderr_file, started_at, peak_memory_kb, baseline_child_rss_kb, fallback_stderr="time limit exceeded")
                 time.sleep(0.01)
         except FileNotFoundError as error:
             return subprocess.CompletedProcess(command, 127, "", str(error))
@@ -617,114 +610,148 @@ class JudgeExecutor:
             stdout_file.close()
             stderr_file.close()
 
-    def _sandbox_command(self, command: list[str], cwd: Path, mount_root: Path | None = None) -> list[str]:
-        mounted = mount_root or cwd
-        return [
-            "docker",
-            "run",
-            "--rm",
-            "-i",
-            "--network",
-            "none",
-            "--cpus",
-            str(settings.sandbox_cpus),
-            "--memory",
-            f"{settings.sandbox_memory_mb}m",
-            "--memory-swap",
-            f"{settings.sandbox_memory_mb}m",
-            "--pids-limit",
-            str(settings.sandbox_pids_limit),
-            "--security-opt",
-            "no-new-privileges:true",
-            "--cap-drop",
-            "ALL",
-            "--tmpfs",
-            "/tmp:rw,nosuid,nodev,size=64m",
-            "--volume",
-            f"{mounted}:{mounted}:rw",
-            "--workdir",
-            str(cwd),
-            settings.sandbox_image,
-            *command,
-        ]
+    def _run_isolate_command(
+        self,
+        command: list[str],
+        cwd: Path,
+        timeout_seconds: float,
+        stdin: str,
+        mount_root: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        cwd.mkdir(parents=True, exist_ok=True)
+        mount_root.mkdir(parents=True, exist_ok=True)
+        box_id = self._next_isolate_box_id()
+        meta_path = cwd / f".isolate-meta-{box_id}.txt"
+        stdin_file = tempfile.TemporaryFile()
+        stdout_file = tempfile.TemporaryFile()
+        stderr_file = tempfile.TemporaryFile()
+        stdin_file.write(stdin.encode("utf-8"))
+        stdin_file.seek(0)
+        started_at = time.monotonic()
+        try:
+            init = subprocess.run(
+                ["isolate", "--cg", f"--box-id={box_id}", "--init"],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=5,
+                check=False,
+            )
+            if init.returncode != 0:
+                return subprocess.CompletedProcess(command, init.returncode, init.stdout, init.stderr)
 
-    def _sandbox_timed_command(self, command: list[str], timeout_seconds: float) -> list[str]:
-        script = (
-            "import json, subprocess, sys, time\n"
-            "command = json.loads(sys.argv[1])\n"
-            "timeout_seconds = float(sys.argv[2])\n"
-            "started_at = time.monotonic()\n"
-            "try:\n"
-            "    completed = subprocess.run(command, stdin=sys.stdin.buffer, timeout=timeout_seconds)\n"
-            "    returncode = completed.returncode\n"
-            "except subprocess.TimeoutExpired:\n"
-            "    returncode = 124\n"
-            "    print('time limit exceeded', file=sys.stderr)\n"
-            "runtime_ms = max(0, int((time.monotonic() - started_at) * 1000))\n"
-            f"print('{SANDBOX_RUNTIME_MARKER}' + str(runtime_ms), file=sys.stderr)\n"
-            "raise SystemExit(returncode)\n"
-        )
-        return [
-            "python3.13" if shutil.which("python3.13") else "python3",
-            "-c",
-            script,
-            json.dumps(command),
-            str(timeout_seconds),
-        ]
+            run_command = [
+                "isolate",
+                "--cg",
+                f"--box-id={box_id}",
+                f"--meta={meta_path}",
+                f"--time={timeout_seconds}",
+                f"--wall-time={timeout_seconds + 1}",
+                "--extra-time=0",
+                f"--mem={settings.sandbox_memory_mb * 1024}",
+                f"--fsize={max(1, self.output_limit_bytes // 1024)}",
+                f"--processes={settings.sandbox_pids_limit}",
+                f"--dir={mount_root}={mount_root}:rw",
+                f"--chdir={cwd}",
+                "--run",
+                "--",
+                *command,
+            ]
+            subprocess.run(
+                run_command,
+                stdin=stdin_file,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                timeout=timeout_seconds + 5,
+                check=False,
+            )
+            meta = self._read_isolate_meta(meta_path)
+            returncode = self._isolate_returncode(meta)
+            if self._file_size(stdout_file) > self.output_limit_bytes or self._file_size(stderr_file) > self.output_limit_bytes:
+                returncode = 125
+            completed = self._completed_process(
+                command,
+                returncode,
+                stdout_file,
+                stderr_file,
+                started_at,
+                memory_kb=self._isolate_memory_kb(meta),
+                fallback_stderr=self._isolate_message(meta, returncode),
+            )
+            completed.runtime_ms = self._isolate_runtime_ms(meta) or completed.runtime_ms
+            return completed
+        except FileNotFoundError as error:
+            return subprocess.CompletedProcess(command, 127, "", str(error))
+        except subprocess.TimeoutExpired:
+            return self._completed_process(
+                command,
+                124,
+                stdout_file,
+                stderr_file,
+                started_at,
+                fallback_stderr="time limit exceeded",
+            )
+        finally:
+            try:
+                subprocess.run(
+                    ["isolate", "--cg", f"--box-id={box_id}", "--cleanup"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=5,
+                    check=False,
+                )
+            except Exception:
+                pass
+            stdin_file.close()
+            stdout_file.close()
+            stderr_file.close()
+            meta_path.unlink(missing_ok=True)
 
-    def _sandbox_exec_command(self, command: list[str], cwd: Path, container_id: str) -> list[str]:
-        return [
-            "docker",
-            "exec",
-            "-i",
-            "--workdir",
-            str(cwd),
-            container_id,
-            *command,
-        ]
+    def _next_isolate_box_id(self) -> int:
+        count = max(1, settings.isolate_box_id_count)
+        seed = os.getpid() + next(_isolate_box_counter)
+        return settings.isolate_box_id_base + (seed % count)
 
-    def _start_sandbox_container(self, cwd: Path) -> str | ExecutionResult:
-        run_command = [
-            "docker",
-            "run",
-            "-d",
-            "--rm",
-            "-i",
-            "--network",
-            "none",
-            "--cpus",
-            str(settings.sandbox_cpus),
-            "--memory",
-            f"{settings.sandbox_memory_mb}m",
-            "--memory-swap",
-            f"{settings.sandbox_memory_mb}m",
-            "--pids-limit",
-            str(settings.sandbox_pids_limit),
-            "--security-opt",
-            "no-new-privileges:true",
-            "--cap-drop",
-            "ALL",
-            "--tmpfs",
-            "/tmp:rw,nosuid,nodev,size=64m",
-            "--volume",
-            f"{cwd}:{cwd}:rw",
-            "--workdir",
-            str(cwd),
-            settings.sandbox_image,
-            "sh",
-            "-lc",
-            "sleep 3600",
-        ]
-        completed = self._run_command(run_command, cwd, timeout_seconds=10, sandbox_mode_override="local")
-        if completed.returncode != 0:
-            return ExecutionResult("system_error", None, "sandbox start failed: " + (completed.stderr or completed.stdout)[-4000:])
-        container_id = (completed.stdout or "").strip()
-        if not container_id:
-            return ExecutionResult("system_error", None, "sandbox start failed: empty container id")
-        return container_id
+    def _read_isolate_meta(self, path: Path) -> dict[str, str]:
+        if not path.exists():
+            return {}
+        meta: dict[str, str] = {}
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            key, _, value = line.partition(":")
+            if key:
+                meta[key.strip()] = value.strip()
+        return meta
 
-    def _stop_sandbox_container(self, container_id: str) -> None:
-        self._run_command(["docker", "rm", "-f", container_id], self.work_root, timeout_seconds=5, sandbox_mode_override="local")
+    def _isolate_returncode(self, meta: dict[str, str]) -> int:
+        status = meta.get("status", "")
+        if status == "TO":
+            return 124
+        if status == "SG":
+            signal_number = int(meta.get("exitsig") or signal.SIGKILL)
+            return 137 if signal_number == signal.SIGKILL else -signal_number
+        if status and status not in {"OK", "RE"}:
+            return 127
+        try:
+            return int(meta.get("exitcode") or 0)
+        except ValueError:
+            return 127
+
+    def _isolate_runtime_ms(self, meta: dict[str, str]) -> int | None:
+        try:
+            return max(0, int(float(meta.get("time") or "0") * 1000))
+        except ValueError:
+            return None
+
+    def _isolate_memory_kb(self, meta: dict[str, str]) -> int | None:
+        try:
+            return int(meta.get("max-rss") or "0") or None
+        except ValueError:
+            return None
+
+    def _isolate_message(self, meta: dict[str, str], returncode: int) -> str:
+        if returncode == 124:
+            return "time limit exceeded"
+        return meta.get("message", "")
 
     def _local_resource_limits(self):
         try:
@@ -762,32 +789,17 @@ class JudgeExecutor:
         memory_kb: int | None = None,
         baseline_child_rss_kb: int | None = None,
         fallback_stderr: str = "",
-        prefer_sandbox_runtime: bool = False,
     ) -> subprocess.CompletedProcess[str]:
         stdout = self._read_limited_text(stdout_file)
         stderr = self._read_limited_text(stderr_file) or fallback_stderr
-        sandbox_runtime_ms: int | None = None
-        if prefer_sandbox_runtime and stderr:
-            stderr, sandbox_runtime_ms = self._extract_sandbox_runtime(stderr)
         completed = subprocess.CompletedProcess(command, returncode, stdout, stderr)
         wall_runtime_ms = max(0, int((time.monotonic() - started_at) * 1000)) if started_at is not None else None
-        completed.runtime_ms = sandbox_runtime_ms if sandbox_runtime_ms is not None else wall_runtime_ms
+        completed.runtime_ms = wall_runtime_ms
         fallback_memory_kb = self._children_maxrss_kb()
         if baseline_child_rss_kb is not None and fallback_memory_kb is not None and fallback_memory_kb <= baseline_child_rss_kb:
             fallback_memory_kb = None
         completed.memory_kb = self._max_metric(memory_kb, fallback_memory_kb)
         return completed
-
-    def _extract_sandbox_runtime(self, stderr: str) -> tuple[str, int | None]:
-        runtime_ms: int | None = None
-
-        def remember_runtime(match: re.Match[str]) -> str:
-            nonlocal runtime_ms
-            runtime_ms = int(match.group("runtime"))
-            return "\n" if match.group(0).startswith("\n") else ""
-
-        cleaned = SANDBOX_RUNTIME_PATTERN.sub(remember_runtime, stderr)
-        return cleaned.rstrip("\n"), runtime_ms
 
     def _children_maxrss_kb(self) -> int | None:
         try:
@@ -800,8 +812,6 @@ class JudgeExecutor:
             return None
 
     def _memory_sample_kb(self, pid: int, mode: str, sandbox_container_id: str | None) -> int | None:
-        if mode == "docker" and sandbox_container_id:
-            return self._container_memory_kb(sandbox_container_id)
         return self._process_rss_kb(pid)
 
     def _process_rss_kb(self, pid: int) -> int | None:
@@ -809,15 +819,6 @@ class JudgeExecutor:
             completed = subprocess.run(["ps", "-o", "rss=", "-p", str(pid)], text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=0.2, check=False)
             value = completed.stdout.strip().splitlines()[-1].strip() if completed.stdout.strip() else ""
             return int(value) if value else None
-        except Exception:
-            return None
-
-    def _container_memory_kb(self, container_id: str) -> int | None:
-        command = "cat /sys/fs/cgroup/memory.current 2>/dev/null || cat /sys/fs/cgroup/memory/memory.usage_in_bytes 2>/dev/null"
-        try:
-            completed = subprocess.run(["docker", "exec", container_id, "sh", "-lc", command], text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=0.3, check=False)
-            value = completed.stdout.strip().splitlines()[-1].strip() if completed.stdout.strip() else ""
-            return max(0, int(value) // 1024) if value else None
         except Exception:
             return None
 

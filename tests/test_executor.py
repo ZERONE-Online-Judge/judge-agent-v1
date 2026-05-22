@@ -4,7 +4,7 @@ from app.executor import JudgeExecutor
 
 
 def test_python_submission_accepts(tmp_path: Path):
-    executor = JudgeExecutor(tmp_path)
+    executor = JudgeExecutor(tmp_path, sandbox_mode="local")
     result = executor.judge(
         {
             "judge_job_id": "job-python",
@@ -22,7 +22,7 @@ def test_python_submission_accepts(tmp_path: Path):
 
 
 def test_python_runtime_error(tmp_path: Path):
-    executor = JudgeExecutor(tmp_path)
+    executor = JudgeExecutor(tmp_path, sandbox_mode="local")
     result = executor.judge(
         {
             "judge_job_id": "job-runtime",
@@ -44,7 +44,7 @@ def test_python_testcase_accepts(tmp_path: Path):
     input_path.write_text("40 2\n", encoding="utf-8")
     output_path.write_text("42\n", encoding="utf-8")
 
-    executor = JudgeExecutor(tmp_path)
+    executor = JudgeExecutor(tmp_path, sandbox_mode="local")
     result = executor.judge(
         {
             "judge_job_id": "job-testcase-accepted",
@@ -74,7 +74,7 @@ def test_python_testcase_wrong_answer(tmp_path: Path):
     input_path.write_text("40 2\n", encoding="utf-8")
     output_path.write_text("42\n", encoding="utf-8")
 
-    executor = JudgeExecutor(tmp_path)
+    executor = JudgeExecutor(tmp_path, sandbox_mode="local")
     result = executor.judge(
         {
             "judge_job_id": "job-testcase-wrong-answer",
@@ -103,7 +103,7 @@ def test_python_testcase_reads_file_url(tmp_path: Path):
     input_path.write_text("21\n", encoding="utf-8")
     output_path.write_text("42\n", encoding="utf-8")
 
-    executor = JudgeExecutor(tmp_path)
+    executor = JudgeExecutor(tmp_path, sandbox_mode="local")
     result = executor.judge(
         {
             "judge_job_id": "job-testcase-file-url",
@@ -133,7 +133,7 @@ def test_testcase_uses_problem_score_and_time_limit(tmp_path: Path):
     input_path.write_text("", encoding="utf-8")
     output_path.write_text("", encoding="utf-8")
 
-    executor = JudgeExecutor(tmp_path)
+    executor = JudgeExecutor(tmp_path, sandbox_mode="local")
     result = executor.judge(
         {
             "judge_job_id": "job-timeout",
@@ -168,7 +168,7 @@ def test_testcase_progress_callback_reports_completed_cases(tmp_path: Path):
     output_two.write_text("42\n", encoding="utf-8")
 
     progress_events: list[tuple[str, int | None, int | None]] = []
-    executor = JudgeExecutor(tmp_path)
+    executor = JudgeExecutor(tmp_path, sandbox_mode="local")
     result = executor.judge(
         {
             "judge_job_id": "job-progress",
@@ -215,7 +215,7 @@ def test_parallel_testcases_report_progress_by_completed_count(tmp_path: Path):
         output_paths.append(output_path)
 
     progress_events: list[tuple[str, int | None, int | None]] = []
-    executor = JudgeExecutor(tmp_path, testcase_parallelism=2)
+    executor = JudgeExecutor(tmp_path, sandbox_mode="local", testcase_parallelism=2)
     result = executor.judge(
         {
             "judge_job_id": "job-parallel-progress",
@@ -266,7 +266,7 @@ def test_parallel_testcases_return_first_failing_display_order(tmp_path: Path):
             }
         )
 
-    executor = JudgeExecutor(tmp_path, testcase_parallelism=3)
+    executor = JudgeExecutor(tmp_path, sandbox_mode="local", testcase_parallelism=3)
     result = executor.judge(
         {
             "judge_job_id": "job-parallel-first-failure",
@@ -297,7 +297,7 @@ def test_testcase_accepts_with_custom_checker(tmp_path: Path):
         encoding="utf-8",
     )
 
-    executor = JudgeExecutor(tmp_path)
+    executor = JudgeExecutor(tmp_path, sandbox_mode="local")
     result = executor.judge(
         {
             "judge_job_id": "job-custom-checker",
@@ -329,7 +329,7 @@ def test_testcase_accepts_with_custom_checker(tmp_path: Path):
 
 
 def test_output_limit_exceeded(tmp_path: Path):
-    executor = JudgeExecutor(tmp_path, output_limit_bytes=1024)
+    executor = JudgeExecutor(tmp_path, sandbox_mode="local", output_limit_bytes=1024)
     result = executor.judge(
         {
             "judge_job_id": "job-output-limit",
@@ -345,42 +345,22 @@ def test_output_limit_exceeded(tmp_path: Path):
     assert result.score == 0
 
 
-def test_docker_sandbox_command_uses_isolation_flags(tmp_path: Path):
-    executor = JudgeExecutor(tmp_path, sandbox_mode="docker")
-    command = executor._sandbox_command(["python3", "main.py"], tmp_path)
+def test_isolate_meta_maps_timeout_to_tle(tmp_path: Path):
+    executor = JudgeExecutor(tmp_path, sandbox_mode="isolate")
 
-    assert "--network" in command
-    assert "none" in command
-    assert "--memory" in command
-    assert "--pids-limit" in command
-    assert "--cap-drop" in command
-    assert "ALL" in command
+    assert executor._isolate_returncode({"status": "TO"}) == 124
+    assert executor._isolate_message({"status": "TO"}, 124) == "time limit exceeded"
 
 
-def test_docker_sandbox_command_can_mount_job_root_for_case_workdir(tmp_path: Path):
-    executor = JudgeExecutor(tmp_path, sandbox_mode="docker")
-    case_dir = tmp_path / "cases" / "001"
-    command = executor._sandbox_command(["/work/job/main"], case_dir, tmp_path)
+def test_isolate_meta_maps_signal_to_runtime_style_code(tmp_path: Path):
+    executor = JudgeExecutor(tmp_path, sandbox_mode="isolate")
 
-    assert f"{tmp_path}:{tmp_path}:rw" in command
-    assert "--workdir" in command
-    assert str(case_dir) in command
+    assert executor._isolate_returncode({"status": "SG", "exitsig": "11"}) == -11
+    assert executor._isolate_returncode({"status": "SG", "exitsig": "9"}) == 137
 
 
-def test_sandbox_runtime_marker_is_removed_from_stderr(tmp_path: Path):
-    executor = JudgeExecutor(tmp_path, sandbox_mode="docker")
-    stderr, runtime_ms = executor._extract_sandbox_runtime(
-        "warning\n__ZOJ_RUNTIME_MS__=17\n",
-    )
+def test_isolate_meta_parses_runtime_and_memory(tmp_path: Path):
+    executor = JudgeExecutor(tmp_path, sandbox_mode="isolate")
 
-    assert stderr == "warning"
-    assert runtime_ms == 17
-
-
-def test_sandbox_timed_command_wraps_original_command(tmp_path: Path):
-    executor = JudgeExecutor(tmp_path, sandbox_mode="docker")
-    command = executor._sandbox_timed_command(["/work/job/main", "--flag"], 1.5)
-
-    assert "-c" in command
-    assert '["/work/job/main", "--flag"]' in command
-    assert "1.5" in command
+    assert executor._isolate_runtime_ms({"time": "0.017"}) == 17
+    assert executor._isolate_memory_kb({"max-rss": "2048"}) == 2048
