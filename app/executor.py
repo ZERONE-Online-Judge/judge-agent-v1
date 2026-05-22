@@ -150,13 +150,13 @@ class JudgeExecutor:
     def _prepare_java(self, job_dir: Path, source_code: str) -> list[str] | ExecutionResult:
         (job_dir / "Main.java").write_text(source_code, encoding="utf-8")
         compiled = self._run_command(
-            ["/usr/bin/javac", "--release", "8", "Main.java"],
+            ["javac", "--release", "8", "Main.java"],
             job_dir,
             timeout_seconds=20
         )
         if compiled.returncode != 0:
             return ExecutionResult("compile_error", None, compiled.stderr[-4000:] or compiled.stdout[-4000:])
-        return ["/usr/bin/java", "-cp", str(job_dir), "Main"]
+        return ["java", "-cp", str(job_dir), "Main"]
 
     def _run_final(self, command: list[str], job_dir: Path, job: dict) -> ExecutionResult:
         completed = self._run_command(command, job_dir, timeout_seconds=self._problem_time_limit_seconds(job), stdin="")
