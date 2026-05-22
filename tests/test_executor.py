@@ -203,6 +203,87 @@ def test_testcase_progress_callback_reports_completed_cases(tmp_path: Path):
     ]
 
 
+def test_parallel_testcases_report_progress_by_completed_count(tmp_path: Path):
+    input_paths = []
+    output_paths = []
+    for index, value in enumerate(["10 32\n", "20 22\n", "30 12\n"], start=1):
+        input_path = tmp_path / f"input{index}.txt"
+        output_path = tmp_path / f"output{index}.txt"
+        input_path.write_text(value, encoding="utf-8")
+        output_path.write_text("42\n", encoding="utf-8")
+        input_paths.append(input_path)
+        output_paths.append(output_path)
+
+    progress_events: list[tuple[str, int | None, int | None]] = []
+    executor = JudgeExecutor(tmp_path, testcase_parallelism=2)
+    result = executor.judge(
+        {
+            "judge_job_id": "job-parallel-progress",
+            "problem": {"max_score": 100, "time_limit_ms": 1000},
+            "submission": {
+                "submission_id": "submission-parallel-progress",
+                "language": "python313",
+                "source_code": "a,b=map(int,input().split()); print(a+b)",
+            },
+            "testcases": [
+                {
+                    "display_order": index,
+                    "input_storage_key": str(input_path),
+                    "output_storage_key": str(output_path),
+                }
+                for index, (input_path, output_path) in enumerate(zip(input_paths, output_paths), start=1)
+            ],
+        },
+        progress=lambda status, current, total: progress_events.append((status, current, total)),
+    )
+
+    assert result.status == "accepted"
+    assert progress_events[0:2] == [
+        ("preparing", 0, 3),
+        ("judging", 0, 3),
+    ]
+    assert sorted(progress_events[2:]) == [
+        ("judging", 1, 3),
+        ("judging", 2, 3),
+        ("judging", 3, 3),
+    ]
+
+
+def test_parallel_testcases_return_first_failing_display_order(tmp_path: Path):
+    testcases = []
+    expected_values = ["42\n", "42\n", "42\n"]
+    input_values = ["42\n", "41\n", "40\n"]
+    for index, (input_value, expected_value) in enumerate(zip(input_values, expected_values), start=1):
+        input_path = tmp_path / f"input{index}.txt"
+        output_path = tmp_path / f"output{index}.txt"
+        input_path.write_text(input_value, encoding="utf-8")
+        output_path.write_text(expected_value, encoding="utf-8")
+        testcases.append(
+            {
+                "display_order": index,
+                "input_storage_key": str(input_path),
+                "output_storage_key": str(output_path),
+            }
+        )
+
+    executor = JudgeExecutor(tmp_path, testcase_parallelism=3)
+    result = executor.judge(
+        {
+            "judge_job_id": "job-parallel-first-failure",
+            "problem": {"max_score": 100, "time_limit_ms": 1000},
+            "submission": {
+                "submission_id": "submission-parallel-first-failure",
+                "language": "python313",
+                "source_code": "print(input().strip())",
+            },
+            "testcases": testcases,
+        }
+    )
+
+    assert result.status == "wrong_answer"
+    assert result.failed_testcase_order == 2
+
+
 def test_testcase_accepts_with_custom_checker(tmp_path: Path):
     input_path = tmp_path / "input.txt"
     output_path = tmp_path / "output.txt"
@@ -274,3 +355,13 @@ def test_docker_sandbox_command_uses_isolation_flags(tmp_path: Path):
     assert "--pids-limit" in command
     assert "--cap-drop" in command
     assert "ALL" in command
+
+
+def test_docker_sandbox_command_can_mount_job_root_for_case_workdir(tmp_path: Path):
+    executor = JudgeExecutor(tmp_path, sandbox_mode="docker")
+    case_dir = tmp_path / "cases" / "001"
+    command = executor._sandbox_command(["/work/job/main"], case_dir, tmp_path)
+
+    assert f"{tmp_path}:{tmp_path}:rw" in command
+    assert "--workdir" in command
+    assert str(case_dir) in command

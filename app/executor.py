@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import base64
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import gzip
 import json
 import os
@@ -36,14 +37,27 @@ class PreparedChecker:
     cached_binary: Path | None = None
 
 
+@dataclass(frozen=True)
+class TestcaseRunResult:
+    order: int
+    result: ExecutionResult
+
+
 ProgressCallback = Callable[[str, int | None, int | None], None]
 
 
 class JudgeExecutor:
-    def __init__(self, work_root: Path | None = None, sandbox_mode: str | None = None, output_limit_bytes: int | None = None) -> None:
+    def __init__(
+        self,
+        work_root: Path | None = None,
+        sandbox_mode: str | None = None,
+        output_limit_bytes: int | None = None,
+        testcase_parallelism: int | None = None,
+    ) -> None:
         self.work_root = work_root or settings.work_root
         self.sandbox_mode = sandbox_mode or settings.sandbox_mode
         self.output_limit_bytes = output_limit_bytes or settings.output_limit_bytes
+        self.testcase_parallelism = max(1, testcase_parallelism or settings.testcase_parallelism)
         self.checker_cache_root = self.work_root / "checker-cache"
         self.work_root.mkdir(parents=True, exist_ok=True)
         self.checker_cache_root.mkdir(parents=True, exist_ok=True)
@@ -145,84 +159,159 @@ class JudgeExecutor:
         checker = self._prepare_checker(job_dir, job.get("package_files") or [])
         if isinstance(checker, ExecutionResult):
             return checker
+        total = len(testcases)
+        max_runtime_ms: int | None = None
+        max_memory_kb: int | None = None
+        worker_count = min(self.testcase_parallelism, total)
         sandbox_container_id: str | None = None
-        if self.sandbox_mode == "docker":
+        if self.sandbox_mode == "docker" and worker_count == 1:
             started = self._start_sandbox_container(job_dir)
             if isinstance(started, ExecutionResult):
                 return started
             sandbox_container_id = started
-        total = len(testcases)
-        max_runtime_ms: int | None = None
-        max_memory_kb: int | None = None
         if progress:
             progress("judging", 0, total)
         try:
-            for index, testcase in enumerate(testcases, start=1):
-                input_text = testcase.get("input_text") if isinstance(testcase.get("input_text"), str) else self._read_object(testcase.get("input_url"), testcase["input_storage_key"])
-                expected_text = testcase.get("output_text") if isinstance(testcase.get("output_text"), str) else self._read_object(testcase.get("output_url"), testcase["output_storage_key"])
-                normalized_input = self._normalize_input_text(input_text)
-                completed = self._run_command(
-                    command,
-                    job_dir,
-                    timeout_seconds=self._testcase_time_limit_seconds(job, testcase),
-                    stdin=normalized_input,
-                    sandbox_container_id=sandbox_container_id,
-                )
-                max_runtime_ms = self._max_metric(max_runtime_ms, getattr(completed, "runtime_ms", None))
-                max_memory_kb = self._max_metric(max_memory_kb, getattr(completed, "memory_kb", None))
-                if completed.returncode == 124:
-                    return self._execution_result("time_limit_exceeded", 0, f"time limit exceeded on testcase {testcase['display_order']}", int(testcase["display_order"]), runtime_ms=max_runtime_ms, memory_kb=max_memory_kb)
-                if completed.returncode == 125:
-                    return self._execution_result("output_limit_exceeded", 0, f"output limit exceeded on testcase {testcase['display_order']}", int(testcase["display_order"]), runtime_ms=max_runtime_ms, memory_kb=max_memory_kb)
-                if completed.returncode in {137, -signal.SIGKILL}:
-                    return self._execution_result("memory_limit_exceeded", 0, f"memory limit exceeded on testcase {testcase['display_order']}", int(testcase["display_order"]), runtime_ms=max_runtime_ms, memory_kb=max_memory_kb)
-                if completed.returncode != 0:
-                    return self._execution_result("runtime_error", 0, (completed.stderr or completed.stdout)[-4000:], int(testcase["display_order"]), runtime_ms=max_runtime_ms, memory_kb=max_memory_kb)
-                case_label = self._testcase_label(testcase)
-                if checker:
-                    checker_result = self._run_checker(
-                        checker,
+            if worker_count == 1:
+                for index, testcase in enumerate(testcases, start=1):
+                    result = self._run_single_testcase(
+                        command,
                         job_dir,
-                        testcase["display_order"],
-                        normalized_input,
-                        expected_text,
-                        completed.stdout,
-                        case_label,
+                        job,
+                        testcase,
+                        checker,
                         source_hash,
-                        sandbox_container_id=sandbox_container_id if settings.checker_sandbox_mode == "docker" else None,
+                        sandbox_container_id,
                     )
-                    if checker_result:
-                        return self._execution_result(checker_result.status, checker_result.score, checker_result.message, checker_result.failed_testcase_order, runtime_ms=max_runtime_ms, memory_kb=max_memory_kb)
+                    max_runtime_ms = self._max_metric(max_runtime_ms, result.result.runtime_ms)
+                    max_memory_kb = self._max_metric(max_memory_kb, result.result.memory_kb)
+                    if result.result.status != "accepted":
+                        return self._execution_result(
+                            result.result.status,
+                            result.result.score,
+                            result.result.message,
+                            result.result.failed_testcase_order,
+                            runtime_ms=max_runtime_ms,
+                            memory_kb=max_memory_kb,
+                        )
                     if progress:
                         progress("judging", index, total)
-                    continue
-                expected = self._normalize_output(expected_text)
-                actual = self._normalize_output(completed.stdout)
-                if actual != expected:
+                return self._execution_result("accepted", self._problem_max_score(job), None, runtime_ms=max_runtime_ms, memory_kb=max_memory_kb)
+
+            completed_count = 0
+            results: list[TestcaseRunResult] = []
+            with ThreadPoolExecutor(max_workers=worker_count) as pool:
+                futures = [
+                    pool.submit(
+                        self._run_single_testcase,
+                        command,
+                        job_dir,
+                        job,
+                        testcase,
+                        checker,
+                        source_hash,
+                        sandbox_container_id,
+                    )
+                    for testcase in testcases
+                ]
+                for future in as_completed(futures):
+                    result = future.result()
+                    results.append(result)
+                    max_runtime_ms = self._max_metric(max_runtime_ms, result.result.runtime_ms)
+                    max_memory_kb = self._max_metric(max_memory_kb, result.result.memory_kb)
+                    completed_count += 1
+                    if progress:
+                        progress("judging", completed_count, total)
+            for item in sorted(results, key=lambda value: value.order):
+                if item.result.status != "accepted":
                     return self._execution_result(
-                        "wrong_answer",
-                        0,
-                        self._build_wrong_answer_message(
-                            int(testcase["display_order"]),
-                            case_label,
-                            "wrong answer",
-                            input_text,
-                            expected_text,
-                            completed.stdout,
-                            str(testcase.get("input_storage_key") or ""),
-                            str(testcase.get("output_storage_key") or ""),
-                            source_hash,
-                        ),
-                        int(testcase["display_order"]),
+                        item.result.status,
+                        item.result.score,
+                        item.result.message,
+                        item.result.failed_testcase_order,
                         runtime_ms=max_runtime_ms,
                         memory_kb=max_memory_kb,
                     )
-                if progress:
-                    progress("judging", index, total)
             return self._execution_result("accepted", self._problem_max_score(job), None, runtime_ms=max_runtime_ms, memory_kb=max_memory_kb)
         finally:
             if sandbox_container_id:
                 self._stop_sandbox_container(sandbox_container_id)
+
+    def _run_single_testcase(
+        self,
+        command: list[str],
+        job_dir: Path,
+        job: dict,
+        testcase: dict,
+        checker: PreparedChecker | None,
+        source_hash: str,
+        sandbox_container_id: str | None,
+    ) -> TestcaseRunResult:
+        order = int(testcase["display_order"])
+        case_dir = job_dir / "cases" / f"{order:03d}"
+        case_dir.mkdir(parents=True, exist_ok=True)
+        input_text = testcase.get("input_text") if isinstance(testcase.get("input_text"), str) else self._read_object(testcase.get("input_url"), testcase["input_storage_key"])
+        expected_text = testcase.get("output_text") if isinstance(testcase.get("output_text"), str) else self._read_object(testcase.get("output_url"), testcase["output_storage_key"])
+        normalized_input = self._normalize_input_text(input_text)
+        completed = self._run_command(
+            command,
+            case_dir,
+            timeout_seconds=self._testcase_time_limit_seconds(job, testcase),
+            stdin=normalized_input,
+            sandbox_container_id=sandbox_container_id,
+            sandbox_mount_root=job_dir if self.sandbox_mode == "docker" and sandbox_container_id is None else None,
+        )
+        runtime_ms = getattr(completed, "runtime_ms", None)
+        memory_kb = getattr(completed, "memory_kb", None)
+        if completed.returncode == 124:
+            return TestcaseRunResult(order, self._execution_result("time_limit_exceeded", 0, f"time limit exceeded on testcase {order}", order, runtime_ms=runtime_ms, memory_kb=memory_kb))
+        if completed.returncode == 125:
+            return TestcaseRunResult(order, self._execution_result("output_limit_exceeded", 0, f"output limit exceeded on testcase {order}", order, runtime_ms=runtime_ms, memory_kb=memory_kb))
+        if completed.returncode in {137, -signal.SIGKILL}:
+            return TestcaseRunResult(order, self._execution_result("memory_limit_exceeded", 0, f"memory limit exceeded on testcase {order}", order, runtime_ms=runtime_ms, memory_kb=memory_kb))
+        if completed.returncode != 0:
+            return TestcaseRunResult(order, self._execution_result("runtime_error", 0, (completed.stderr or completed.stdout)[-4000:], order, runtime_ms=runtime_ms, memory_kb=memory_kb))
+        case_label = self._testcase_label(testcase)
+        if checker:
+            checker_result = self._run_checker(
+                checker,
+                case_dir,
+                order,
+                normalized_input,
+                expected_text,
+                completed.stdout,
+                case_label,
+                source_hash,
+                sandbox_container_id=sandbox_container_id if settings.checker_sandbox_mode == "docker" else None,
+            )
+            if checker_result:
+                return TestcaseRunResult(order, self._execution_result(checker_result.status, checker_result.score, checker_result.message, checker_result.failed_testcase_order, runtime_ms=runtime_ms, memory_kb=memory_kb))
+            return TestcaseRunResult(order, self._execution_result("accepted", self._problem_max_score(job), None, runtime_ms=runtime_ms, memory_kb=memory_kb))
+        expected = self._normalize_output(expected_text)
+        actual = self._normalize_output(completed.stdout)
+        if actual != expected:
+            return TestcaseRunResult(
+                order,
+                self._execution_result(
+                    "wrong_answer",
+                    0,
+                    self._build_wrong_answer_message(
+                        order,
+                        case_label,
+                        "wrong answer",
+                        input_text,
+                        expected_text,
+                        completed.stdout,
+                        str(testcase.get("input_storage_key") or ""),
+                        str(testcase.get("output_storage_key") or ""),
+                        source_hash,
+                    ),
+                    order,
+                    runtime_ms=runtime_ms,
+                    memory_kb=memory_kb,
+                ),
+            )
+        return TestcaseRunResult(order, self._execution_result("accepted", self._problem_max_score(job), None, runtime_ms=runtime_ms, memory_kb=memory_kb))
 
     def _prepare_checker(self, job_dir: Path, package_files: list[dict]) -> PreparedChecker | ExecutionResult | None:
         checker_files = [item for item in package_files if item.get("role") == "checker"]
@@ -461,10 +550,11 @@ class JudgeExecutor:
         stdin: str = "",
         sandbox_mode_override: str | None = None,
         sandbox_container_id: str | None = None,
+        sandbox_mount_root: Path | None = None,
     ) -> subprocess.CompletedProcess[str]:
         mode = sandbox_mode_override or self.sandbox_mode
         if mode == "docker":
-            effective_command = self._sandbox_exec_command(command, cwd, sandbox_container_id) if sandbox_container_id else self._sandbox_command(command, cwd)
+            effective_command = self._sandbox_exec_command(command, cwd, sandbox_container_id) if sandbox_container_id else self._sandbox_command(command, cwd, sandbox_mount_root or cwd)
         else:
             effective_command = command
         cwd.mkdir(parents=True, exist_ok=True)
@@ -517,7 +607,8 @@ class JudgeExecutor:
             stdout_file.close()
             stderr_file.close()
 
-    def _sandbox_command(self, command: list[str], cwd: Path) -> list[str]:
+    def _sandbox_command(self, command: list[str], cwd: Path, mount_root: Path | None = None) -> list[str]:
+        mounted = mount_root or cwd
         return [
             "docker",
             "run",
@@ -540,7 +631,7 @@ class JudgeExecutor:
             "--tmpfs",
             "/tmp:rw,nosuid,nodev,size=64m",
             "--volume",
-            f"{cwd}:{cwd}:rw",
+            f"{mounted}:{mounted}:rw",
             "--workdir",
             str(cwd),
             settings.sandbox_image,
