@@ -5,6 +5,30 @@ from app.backend_client import BackendClient
 from app.executor import JudgeExecutor
 from app.settings import settings
 
+import subprocess
+
+def cleanup_isolate_boxes() -> None:
+    start = settings.isolate_box_id_base
+    end = start + settings.isolate_box_id_count
+
+    print(f"[judge-agent] cleaning isolate boxes {start}~{end - 1}")
+
+    for box_id in range(start, end):
+        try:
+            subprocess.run(
+                [
+                    "isolate",
+                    "--cg",
+                    f"--box-id={box_id}",
+                    "--cleanup",
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=2,
+                check=False,
+            )
+        except Exception:
+            pass
 
 def judge_one(client: BackendClient, executor: JudgeExecutor, job: dict) -> None:
     def report_progress(status: str, progress_current: int | None, progress_total: int | None) -> None:
@@ -35,6 +59,7 @@ def judge_one(client: BackendClient, executor: JudgeExecutor, job: dict) -> None
 
 
 def main() -> None:
+    cleanup_isolate_boxes()
     client = BackendClient()
     executor = JudgeExecutor()
     while True:
