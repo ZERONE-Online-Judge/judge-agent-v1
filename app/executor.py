@@ -118,7 +118,7 @@ class JudgeExecutor:
                 job_dir,
                 "main.cpp",
                 source_code,
-                ["/usr/bin/g++", "-std=c++17", "-O2", "main.cpp", "-o", "main"],
+                ["/usr/bin/g++", "-B/usr/bin", "-std=c++17", "-O2", "main.cpp", "-o", "main"],
                 [str(job_dir / "main")]
             )
         if language == "c99":
@@ -126,7 +126,7 @@ class JudgeExecutor:
                 job_dir,
                 "main.c",
                 source_code,
-                ["/usr/bin/gcc", "-std=c99", "-O2", "main.c", "-o", "main"],
+                ["/usr/bin/gcc", "-B/usr/bin", "-std=c99", "-O2", "main.c", "-o", "main"],
                 [str(job_dir / "main")]
             )
         if language == "java8":
@@ -425,9 +425,9 @@ class JudgeExecutor:
             (cache_dir / resource_name).write_bytes(resource_bytes)
 
         if suffix in {".cpp", ".cc", ".cxx"}:
-            compile_cmd = ["/usr/bin/g++", "-std=c++17", "-O2", filename, "-o", "checker"]
+            compile_cmd = ["/usr/bin/g++", "-B/usr/bin", "-std=c++17", "-O2", filename, "-o", "checker"]
         elif suffix == ".c":
-            compile_cmd = ["/usr/bin/gcc", "-std=c99", "-O2", filename, "-o", "checker"]
+            compile_cmd = ["/usr/bin/gcc", "-B/usr/bin", "-std=c99", "-O2", filename, "-o", "checker"]
         else:
             return ExecutionResult("system_error", None, f"unsupported checker file: {filename}")
 
@@ -677,6 +677,7 @@ class JudgeExecutor:
                 f"--processes={settings.sandbox_pids_limit}",
                 f"--dir={mount_root}={mount_root}:rw",
                 f"--chdir={cwd}",
+                "--env=PATH=/usr/bin:/bin",
                 "--run",
                 "--",
                 *command,
