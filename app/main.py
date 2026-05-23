@@ -1,3 +1,6 @@
+import faulthandler
+import signal
+import sys
 import time
 import traceback
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
@@ -98,6 +101,7 @@ def judge_one(client: BackendClient, executor: JudgeExecutor, job: dict) -> None
 
 
 def main() -> None:
+    faulthandler.register(signal.SIGUSR1, file=sys.stderr, all_threads=True)
     cleanup_isolate_boxes()
     client = BackendClient()
     executor = JudgeExecutor()

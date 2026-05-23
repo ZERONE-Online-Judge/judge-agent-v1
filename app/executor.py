@@ -274,46 +274,48 @@ class JudgeExecutor:
             return self._execution_result("accepted", self._problem_max_score(job), None, runtime_ms=max_runtime_ms, memory_kb=max_memory_kb)
 
         completed_count = 0
-        results: list[TestcaseRunResult] = []
         with ThreadPoolExecutor(max_workers=worker_count) as pool:
-            futures = [
-                pool.submit(
-                    self._run_single_testcase,
-                    command,
-                    job_dir,
-                    job,
-                    testcase,
-                    checker,
-                    source_hash,
-                    sandbox_container_id,
-                )
-                for testcase in testcases
-            ]
-            for future in as_completed(futures):
-                result = future.result()
-                results.append(result)
-                max_runtime_ms = self._max_metric(max_runtime_ms, result.result.runtime_ms)
-                max_memory_kb = self._max_metric(max_memory_kb, result.result.memory_kb)
-                completed_count += 1
-                if progress:
-                    progress("judging", completed_count, total)
-                print(
-                    f"[judge-agent] job={job_id} testcase={result.order} status={result.result.status} "
-                    f"runtime_ms={result.result.runtime_ms} memory_kb={result.result.memory_kb} done={completed_count}/{total}",
-                    flush=True,
-                )
-        for item in sorted(results, key=lambda value: value.order):
-            if item.result.status != "accepted":
-                return self._execution_result(
-                    item.result.status,
-                    item.result.score,
-                    item.result.message,
-                    item.result.failed_testcase_order,
-                    runtime_ms=max_runtime_ms,
-                    memory_kb=max_memory_kb,
-                )
-        return self._execution_result("accepted", self._problem_max_score(job), None, runtime_ms=max_runtime_ms, memory_kb=max_memory_kb)
+            for offset in range(0, total, worker_count):
+                batch = testcases[offset:offset + worker_count]
+                futures = [
+                    pool.submit(
+                        self._run_single_testcase,
+                        command,
+                        job_dir,
+                        job,
+                        testcase,
+                        checker,
+                        source_hash,
+                        sandbox_container_id,
+                    )
+                    for testcase in batch
+                ]
+                batch_results: list[TestcaseRunResult] = []
+                for future in as_completed(futures):
+                    result = future.result()
+                    batch_results.append(result)
+                    max_runtime_ms = self._max_metric(max_runtime_ms, result.result.runtime_ms)
+                    max_memory_kb = self._max_metric(max_memory_kb, result.result.memory_kb)
+                    completed_count += 1
+                    if progress:
+                        progress("judging", completed_count, total)
+                    print(
+                        f"[judge-agent] job={job_id} testcase={result.order} status={result.result.status} "
+                        f"runtime_ms={result.result.runtime_ms} memory_kb={result.result.memory_kb} done={completed_count}/{total}",
+                        flush=True,
+                    )
 
+                for result in sorted(batch_results, key=lambda item: item.order):
+                    if result.result.status != "accepted":
+                        return self._execution_result(
+                            result.result.status,
+                            result.result.score,
+                            result.result.message,
+                            result.result.failed_testcase_order,
+                            runtime_ms=max_runtime_ms,
+                            memory_kb=max_memory_kb,
+                        )
+        return self._execution_result("accepted", self._problem_max_score(job), None, runtime_ms=max_runtime_ms, memory_kb=max_memory_kb)
     def _run_single_testcase(
         self,
         command: list[str],
@@ -325,20 +327,37 @@ class JudgeExecutor:
         sandbox_container_id: str | None,
     ) -> TestcaseRunResult:
         order = int(testcase["display_order"])
-        case_dir = job_dir / "cases" / f"{order:03d}"
-        case_dir.mkdir(parents=True, exist_ok=True)
-        input_text = testcase.get("input_text") if isinstance(testcase.get("input_text"), str) else self._read_object(testcase.get("input_url"), testcase["input_storage_key"])
-        expected_text = testcase.get("output_text") if isinstance(testcase.get("output_text"), str) else self._read_object(testcase.get("output_url"), testcase["output_storage_key"])
-        normalized_input = self._normalize_input_text(input_text)
-        completed = self._run_command(
-            command,
-            case_dir,
-            timeout_seconds=self._testcase_time_limit_seconds(job, testcase),
-            stdin=normalized_input,
-            sandbox_container_id=sandbox_container_id,
-            sandbox_mount_root=job_dir if self.sandbox_mode == "isolate" else None,
-            memory_limit_mb=self._testcase_memory_limit_mb(job, testcase),
-        )
+        job_id = str(job.get("judge_job_id") or "-")
+        started_at = time.monotonic()
+        try:
+            case_dir = job_dir / "cases" / f"{order:03d}"
+            case_dir.mkdir(parents=True, exist_ok=True)
+            print(f"[judge-agent] job={job_id} testcase={order} stage=read-input:start", flush=True)
+            input_text = testcase.get("input_text") if isinstance(testcase.get("input_text"), str) else self._read_object(testcase.get("input_url"), testcase["input_storage_key"])
+            print(f"[judge-agent] job={job_id} testcase={order} stage=read-input:done elapsed={time.monotonic() - started_at:.3f}s", flush=True)
+            print(f"[judge-agent] job={job_id} testcase={order} stage=read-output:start", flush=True)
+            expected_text = testcase.get("output_text") if isinstance(testcase.get("output_text"), str) else self._read_object(testcase.get("output_url"), testcase["output_storage_key"])
+            print(f"[judge-agent] job={job_id} testcase={order} stage=read-output:done elapsed={time.monotonic() - started_at:.3f}s", flush=True)
+            normalized_input = self._normalize_input_text(input_text)
+            print(f"[judge-agent] job={job_id} testcase={order} stage=run:start", flush=True)
+            completed = self._run_command(
+                command,
+                case_dir,
+                timeout_seconds=self._testcase_time_limit_seconds(job, testcase),
+                stdin=normalized_input,
+                sandbox_container_id=sandbox_container_id,
+                sandbox_mount_root=job_dir if self.sandbox_mode == "isolate" else None,
+                memory_limit_mb=self._testcase_memory_limit_mb(job, testcase),
+            )
+            print(
+                f"[judge-agent] job={job_id} testcase={order} stage=run:done "
+                f"returncode={completed.returncode} elapsed={time.monotonic() - started_at:.3f}s",
+                flush=True,
+            )
+        except Exception as error:
+            message = f"testcase {order} system error: {type(error).__name__}: {error}"
+            print(f"[judge-agent] job={job_id} testcase={order} status=system_error error={message}", flush=True)
+            return TestcaseRunResult(order, self._execution_result("system_error", 0, message[-4000:], order))
         runtime_ms = getattr(completed, "runtime_ms", None)
         memory_kb = getattr(completed, "memory_kb", None)
 
@@ -554,7 +573,11 @@ class JudgeExecutor:
         return f"{input_name} / {output_name}"
 
     def _read_object(self, url: str | None, storage_key: str) -> str:
-        return self._read_object_bytes(url, storage_key).decode("utf-8-sig")
+        return self._read_object_bytes(
+            url,
+            storage_key,
+            timeout=settings.object_read_timeout_seconds,
+        ).decode("utf-8-sig")
 
     def _normalize_input_text(self, text: str) -> str:
         # Some uploaded testcase files include invisible characters (BOM/NBSP)

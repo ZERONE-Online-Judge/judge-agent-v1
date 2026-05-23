@@ -16,6 +16,7 @@ class Settings:
     long_poll_seconds: float = float(os.getenv("JUDGE_LONG_POLL_SECONDS", "20"))
     heartbeat_interval_seconds: float = float(os.getenv("JUDGE_HEARTBEAT_INTERVAL_SECONDS", "2"))
     default_time_limit_seconds: float = float(os.getenv("JUDGE_DEFAULT_TIME_LIMIT_SECONDS", "3"))
+    object_read_timeout_seconds: float = float(os.getenv("JUDGE_OBJECT_READ_TIMEOUT_SECONDS", "5"))
     sandbox_mode: str = os.getenv("JUDGE_SANDBOX_MODE", "isolate")
     checker_sandbox_mode: str = os.getenv("JUDGE_CHECKER_SANDBOX_MODE", os.getenv("JUDGE_SANDBOX_MODE", "isolate"))
     sandbox_memory_mb: int = int(os.getenv("JUDGE_SANDBOX_MEMORY_MB", "512"))
