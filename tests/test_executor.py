@@ -370,6 +370,21 @@ def test_isolate_meta_parses_runtime_and_memory(tmp_path: Path):
     assert executor._isolate_memory_kb({"cg-mem": "4096", "max-rss": "2048"}) == 4096
 
 
+def test_memory_limit_uses_problem_and_testcase_values(tmp_path: Path):
+    executor = JudgeExecutor(tmp_path, sandbox_mode="isolate")
+    job = {"problem": {"memory_limit_mb": 1024}}
+
+    assert executor._problem_memory_limit_mb(job) == 1024
+    assert executor._testcase_memory_limit_mb(job, {}) == 1024
+    assert (
+        executor._testcase_memory_limit_mb(
+            job,
+            {"memory_limit_mb_override": 768},
+        )
+        == 768
+    )
+
+
 def test_java_command_gets_conservative_heap_limit(tmp_path: Path):
     executor = JudgeExecutor(tmp_path, sandbox_mode="isolate")
     command = executor._command_with_runtime_limits(

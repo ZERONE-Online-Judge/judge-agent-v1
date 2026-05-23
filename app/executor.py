@@ -723,7 +723,11 @@ class JudgeExecutor:
                 stdin=stdin_file,
                 stdout=stdout_file,
                 stderr=stderr_file,
-                preexec_fn=self._local_resource_limits() if apply_local_limits else None,
+                preexec_fn=self._local_resource_limits(
+                    memory_limit_mb or settings.sandbox_memory_mb,
+                )
+                if apply_local_limits
+                else None,
             )
             peak_memory_kb = self._max_metric(peak_memory_kb, self._memory_sample_kb(process.pid, mode, sandbox_container_id))
             while True:
@@ -969,14 +973,14 @@ class JudgeExecutor:
             args.append(f"--dir={path}={path}")
         return args
 
-    def _local_resource_limits(self):
+    def _local_resource_limits(self, memory_limit_mb: int):
         try:
             import resource
         except ImportError:
             return None
 
         def apply_limits() -> None:
-            memory_bytes = settings.sandbox_memory_mb * 1024 * 1024
+            memory_bytes = memory_limit_mb * 1024 * 1024
             try:
                 resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
             except (ValueError, OSError):

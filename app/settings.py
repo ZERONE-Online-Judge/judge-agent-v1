@@ -19,11 +19,11 @@ class Settings:
     object_read_timeout_seconds: float = float(os.getenv("JUDGE_OBJECT_READ_TIMEOUT_SECONDS", "30"))
     sandbox_mode: str = os.getenv("JUDGE_SANDBOX_MODE", "isolate")
     checker_sandbox_mode: str = os.getenv("JUDGE_CHECKER_SANDBOX_MODE", os.getenv("JUDGE_SANDBOX_MODE", "isolate"))
-    sandbox_memory_mb: int = int(os.getenv("JUDGE_SANDBOX_MEMORY_MB", "512"))
+    sandbox_memory_mb: int = int(os.getenv("JUDGE_SANDBOX_MEMORY_MB", "1024"))
     sandbox_pids_limit: int = int(os.getenv("JUDGE_SANDBOX_PIDS_LIMIT", "128"))
     isolate_box_id_base: int = int(os.getenv("JUDGE_ISOLATE_BOX_ID_BASE", "100"))
     isolate_box_id_count: int = int(os.getenv("JUDGE_ISOLATE_BOX_ID_COUNT", "1000"))
-    output_limit_bytes: int = int(os.getenv("JUDGE_OUTPUT_LIMIT_BYTES", str(1024 * 1024)))
+    output_limit_bytes: int = int(os.getenv("JUDGE_OUTPUT_LIMIT_BYTES", str(10 * 1024 * 1024)))
     run_once: bool = os.getenv("JUDGE_RUN_ONCE", "false").lower() == "true"
 
 
