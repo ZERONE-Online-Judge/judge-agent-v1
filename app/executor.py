@@ -620,8 +620,16 @@ class JudgeExecutor:
 
     def _read_object_bytes(self, url: str | None, storage_key: str, timeout: float = 20) -> bytes:
         if url:
+            deadline = time.monotonic() + timeout
+            chunks: list[bytes] = []
             with urlopen(self._absolute_url(url), timeout=timeout) as response:
-                return response.read()
+                while True:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(f"object read exceeded {timeout:.1f}s: {storage_key or url}")
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        return b"".join(chunks)
+                    chunks.append(chunk)
         path = Path(storage_key)
         if not path.is_absolute():
             path = self.work_root / "objects" / storage_key
