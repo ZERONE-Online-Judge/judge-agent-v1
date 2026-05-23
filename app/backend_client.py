@@ -59,6 +59,7 @@ class BackendClient:
                 "total_slots": settings.total_slots,
                 "free_slots": max(settings.total_slots - running_job_count, 0),
                 "running_job_count": running_job_count,
+                "agent_version": settings.agent_version,
             },
         )
 
@@ -116,5 +117,15 @@ class BackendClient:
                 "status": status,
                 "progress_current": progress_current,
                 "progress_total": progress_total,
+            },
+        )
+
+    def renew_lease(self, job_id: str, lease_token: str) -> None:
+        self._request(
+            "POST",
+            f"/internal/judge/jobs/{job_id}/lease:renew",
+            {
+                "node_secret": settings.node_secret,
+                "lease_token": lease_token,
             },
         )

@@ -1,5 +1,7 @@
 import time
+import traceback
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from threading import Event, Thread
 
 from app.backend_client import BackendClient
 from app.executor import JudgeExecutor
@@ -31,6 +33,19 @@ def cleanup_isolate_boxes() -> None:
             pass
 
 def judge_one(client: BackendClient, executor: JudgeExecutor, job: dict) -> None:
+    stop_keepalive = Event()
+
+    def keepalive() -> None:
+        interval = 30.0
+        while not stop_keepalive.wait(interval):
+            try:
+                client.renew_lease(
+                    job_id=job["judge_job_id"],
+                    lease_token=job["lease_token"],
+                )
+            except RuntimeError as error:
+                print(f"[judge-agent] lease renew failed for {job['judge_job_id']}: {error}")
+
     def report_progress(status: str, progress_current: int | None, progress_total: int | None) -> None:
         try:
             client.report_progress(
@@ -43,19 +58,43 @@ def judge_one(client: BackendClient, executor: JudgeExecutor, job: dict) -> None
         except RuntimeError as error:
             print(f"[judge-agent] progress report failed for {job['judge_job_id']}: {error}")
 
-    result = executor.judge(job, progress=report_progress)
-    client.report_result(
-        job_id=job["judge_job_id"],
-        lease_token=job["lease_token"],
-        final_status=result.status,
-        awarded_score=result.score,
-        compile_message=result.message if result.status == "compile_error" else None,
-        judge_message=result.message,
-        failed_testcase_order=result.failed_testcase_order,
-        runtime_ms=result.runtime_ms,
-        memory_kb=result.memory_kb,
-    )
-    print(f"[judge-agent] reported {job['judge_job_id']} status={result.status}")
+    keepalive_thread = Thread(target=keepalive, daemon=True)
+    keepalive_thread.start()
+    try:
+        result = executor.judge(job, progress=report_progress)
+        client.report_result(
+            job_id=job["judge_job_id"],
+            lease_token=job["lease_token"],
+            final_status=result.status,
+            awarded_score=result.score,
+            compile_message=result.message if result.status == "compile_error" else None,
+            judge_message=result.message,
+            failed_testcase_order=result.failed_testcase_order,
+            runtime_ms=result.runtime_ms,
+            memory_kb=result.memory_kb,
+        )
+        print(f"[judge-agent] reported {job['judge_job_id']} status={result.status}")
+    except Exception as error:
+        message = "".join(traceback.format_exception_only(type(error), error)).strip()
+        try:
+            client.report_result(
+                job_id=job["judge_job_id"],
+                lease_token=job["lease_token"],
+                final_status="system_error",
+                awarded_score=0,
+                compile_message=None,
+                judge_message=message[-4000:],
+                failed_testcase_order=None,
+                runtime_ms=None,
+                memory_kb=None,
+            )
+            print(f"[judge-agent] reported {job['judge_job_id']} status=system_error error={message}")
+        except Exception as report_error:
+            print(f"[judge-agent] result report failed for {job['judge_job_id']}: {report_error}")
+        raise
+    finally:
+        stop_keepalive.set()
+        keepalive_thread.join(timeout=1)
 
 
 def main() -> None:
