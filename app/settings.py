@@ -11,12 +11,12 @@ class Settings:
     total_slots: int = int(os.getenv("JUDGE_TOTAL_SLOTS", "2"))
     testcase_parallelism: int = int(os.getenv("JUDGE_TESTCASE_PARALLELISM", "4"))
     work_root: Path = Path(os.getenv("JUDGE_WORK_ROOT", "/tmp/zerone-judge"))
-    agent_version: str = "0.2.6"
+    agent_version: str = "0.2.7"
     poll_interval_seconds: float = float(os.getenv("JUDGE_POLL_INTERVAL_SECONDS", "1"))
     long_poll_seconds: float = float(os.getenv("JUDGE_LONG_POLL_SECONDS", "20"))
     heartbeat_interval_seconds: float = float(os.getenv("JUDGE_HEARTBEAT_INTERVAL_SECONDS", "2"))
     default_time_limit_seconds: float = float(os.getenv("JUDGE_DEFAULT_TIME_LIMIT_SECONDS", "3"))
-    object_read_timeout_seconds: float = float(os.getenv("JUDGE_OBJECT_READ_TIMEOUT_SECONDS", "5"))
+    object_read_timeout_seconds: float = float(os.getenv("JUDGE_OBJECT_READ_TIMEOUT_SECONDS", "30"))
     sandbox_mode: str = os.getenv("JUDGE_SANDBOX_MODE", "isolate")
     checker_sandbox_mode: str = os.getenv("JUDGE_CHECKER_SANDBOX_MODE", os.getenv("JUDGE_SANDBOX_MODE", "isolate"))
     sandbox_memory_mb: int = int(os.getenv("JUDGE_SANDBOX_MEMORY_MB", "512"))

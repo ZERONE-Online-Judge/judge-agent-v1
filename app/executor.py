@@ -122,13 +122,17 @@ class JudgeExecutor:
             )
 
     def _hydrate_job_bundle(self, job: dict) -> None:
-        if job.get("testcases"):
+        testcases = job.get("testcases") or []
+        if testcases and all(
+            isinstance(testcase.get("input_text"), str) and isinstance(testcase.get("output_text"), str)
+            for testcase in testcases
+        ):
             return
         bundle_url = job.get("bundle_url")
         if not isinstance(bundle_url, str) or not bundle_url:
             return
         try:
-            raw = self._read_object_bytes(bundle_url, "", timeout=5)
+            raw = self._read_object_bytes(bundle_url, "", timeout=settings.object_read_timeout_seconds)
             if raw[:2] == b"\x1f\x8b":
                 raw = gzip.decompress(raw)
             payload = json.loads(raw.decode("utf-8"))
