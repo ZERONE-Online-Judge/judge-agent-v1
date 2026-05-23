@@ -72,7 +72,18 @@ class JudgeExecutor:
         submission = job["submission"]
         language = submission["language"]
         source_code = submission["source_code"]
+        started_at = time.monotonic()
+        job_id = str(job.get("judge_job_id") or "-")
+        print(
+            f"[judge-agent] job={job_id} stage=hydrate:start language={language}",
+            flush=True,
+        )
         self._hydrate_job_bundle(job)
+        print(
+            f"[judge-agent] job={job_id} stage=hydrate:done elapsed={time.monotonic() - started_at:.3f}s "
+            f"testcases={len(job.get('testcases') or [])}",
+            flush=True,
+        )
         job_dir = self.work_root / job["judge_job_id"]
         if job_dir.exists():
             shutil.rmtree(job_dir)
@@ -82,16 +93,32 @@ class JudgeExecutor:
             testcase_total = len(job.get("testcases") or []) or None
             if progress:
                 progress("preparing", 0 if testcase_total is not None else None, testcase_total)
+            prepare_started_at = time.monotonic()
             prepared = self._prepare_command(job_dir, language, source_code)
+            print(
+                f"[judge-agent] job={job_id} stage=prepare:done elapsed={time.monotonic() - prepare_started_at:.3f}s",
+                flush=True,
+            )
             if isinstance(prepared, ExecutionResult):
                 return prepared
             testcases = job.get("testcases") or []
             if testcases:
                 source_hash = hashlib.sha256(source_code.encode("utf-8")).hexdigest()
-                return self._run_testcases(prepared, job_dir, job, testcases, source_hash, progress)
-            return self._run_final(prepared, job_dir, job)
+                result = self._run_testcases(prepared, job_dir, job, testcases, source_hash, progress)
+            else:
+                result = self._run_final(prepared, job_dir, job)
+            print(
+                f"[judge-agent] job={job_id} stage=judge:done status={result.status} elapsed={time.monotonic() - started_at:.3f}s",
+                flush=True,
+            )
+            return result
         finally:
-            shutil.rmtree(job_dir, ignore_errors=True)
+            cleanup_started_at = time.monotonic()
+            self._remove_tree(job_dir)
+            print(
+                f"[judge-agent] job={job_id} stage=cleanup:done elapsed={time.monotonic() - cleanup_started_at:.3f}s",
+                flush=True,
+            )
 
     def _hydrate_job_bundle(self, job: dict) -> None:
         bundle_url = job.get("bundle_url")
@@ -200,10 +227,15 @@ class JudgeExecutor:
         if isinstance(checker, ExecutionResult):
             return checker
         total = len(testcases)
+        job_id = str(job.get("judge_job_id") or "-")
         max_runtime_ms: int | None = None
         max_memory_kb: int | None = None
         worker_count = min(self.testcase_parallelism, total)
         sandbox_container_id: str | None = None
+        print(
+            f"[judge-agent] job={job_id} stage=testcases:start total={total} workers={worker_count}",
+            flush=True,
+        )
         if progress:
             progress("judging", 0, total)
         if worker_count == 1:
@@ -230,6 +262,11 @@ class JudgeExecutor:
                     )
                 if progress:
                     progress("judging", index, total)
+                print(
+                    f"[judge-agent] job={job_id} testcase={result.order} status={result.result.status} "
+                    f"runtime_ms={result.result.runtime_ms} memory_kb={result.result.memory_kb} done={index}/{total}",
+                    flush=True,
+                )
             return self._execution_result("accepted", self._problem_max_score(job), None, runtime_ms=max_runtime_ms, memory_kb=max_memory_kb)
 
         completed_count = 0
@@ -256,6 +293,11 @@ class JudgeExecutor:
                 completed_count += 1
                 if progress:
                     progress("judging", completed_count, total)
+                print(
+                    f"[judge-agent] job={job_id} testcase={result.order} status={result.result.status} "
+                    f"runtime_ms={result.result.runtime_ms} memory_kb={result.result.memory_kb} done={completed_count}/{total}",
+                    flush=True,
+                )
         for item in sorted(results, key=lambda value: value.order):
             if item.result.status != "accepted":
                 return self._execution_result(
@@ -957,6 +999,19 @@ class JudgeExecutor:
         if current is None:
             return candidate
         return max(current, candidate)
+
+    def _remove_tree(self, path: Path) -> None:
+        for attempt in range(5):
+            try:
+                shutil.rmtree(path)
+                return
+            except FileNotFoundError:
+                return
+            except OSError:
+                if attempt == 4:
+                    shutil.rmtree(path, ignore_errors=True)
+                    return
+                time.sleep(0.1 * (attempt + 1))
 
     def _execution_result(
         self,
