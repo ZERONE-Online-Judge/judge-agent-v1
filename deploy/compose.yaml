@@ -11,6 +11,17 @@ services:
       JUDGE_SANDBOX_MEMORY_MB: "512"
       JUDGE_SANDBOX_PIDS_LIMIT: "128"
       JUDGE_OUTPUT_LIMIT_BYTES: "1048576"
+    command:
+      - /bin/sh
+      - -lc
+      - |
+        mkdir -p /run/isolate
+        chmod 755 /run/isolate
+        if [ ! -f /run/isolate/cgroup ]; then
+          printf '%s\n' /sys/fs/cgroup > /run/isolate/cgroup
+        fi
+        chmod 644 /run/isolate/cgroup
+        exec python -m app.main
     volumes:
       - /var/lib/zerone-judge:/var/lib/zerone-judge
       - /sys/fs/cgroup:/sys/fs/cgroup:rw

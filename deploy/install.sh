@@ -43,6 +43,16 @@ ensure_docker_systemd() {
   systemctl enable --now docker.service
 }
 
+ensure_isolate_cgroup_file() {
+  log "Ensuring isolate cgroup marker"
+  mkdir -p /run/isolate
+  chmod 755 /run/isolate
+  if [[ ! -f /run/isolate/cgroup ]]; then
+    printf '%s\n' "/sys/fs/cgroup" > /run/isolate/cgroup
+  fi
+  chmod 644 /run/isolate/cgroup
+}
+
 generate_secret() {
   if command -v openssl >/dev/null 2>&1; then
     openssl rand -hex 32
@@ -201,6 +211,7 @@ upsert_env "$ENV_FILE" "JUDGE_POLL_INTERVAL_SECONDS" "1"
 
 mkdir -p /var/lib/zerone-judge
 chown -R root:root /var/lib/zerone-judge
+ensure_isolate_cgroup_file
 
 log "Starting judge-agent with docker compose"
 cd "$SCRIPT_DIR"
