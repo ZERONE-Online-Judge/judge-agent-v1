@@ -359,6 +359,7 @@ def test_isolate_meta_maps_signal_to_runtime_style_code(tmp_path: Path):
 
     assert executor._isolate_returncode({"status": "SG", "exitsig": "11"}) == -11
     assert executor._isolate_returncode({"status": "SG", "exitsig": "9"}) == 137
+    assert executor._isolate_returncode({"status": "SG", "exitsig": "25"}) == 125
 
 
 def test_isolate_meta_parses_runtime_and_memory(tmp_path: Path):

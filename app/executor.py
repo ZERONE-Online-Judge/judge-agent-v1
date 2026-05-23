@@ -22,6 +22,10 @@ from app.settings import settings
 
 
 _isolate_box_counter = itertools.count()
+_sigxfsz = getattr(signal, "SIGXFSZ", None)
+_output_limit_returncodes = {125}
+if _sigxfsz is not None:
+    _output_limit_returncodes.add(-int(_sigxfsz))
 
 
 @dataclass(frozen=True)
@@ -216,7 +220,7 @@ class JudgeExecutor:
             return self._execution_result("accepted", self._problem_max_score(job), None, completed=completed)
         if completed.returncode == 124:
             return self._execution_result("time_limit_exceeded", 0, "time limit exceeded", completed=completed)
-        if completed.returncode == 125:
+        if completed.returncode in _output_limit_returncodes:
             return self._execution_result("output_limit_exceeded", 0, "output limit exceeded", completed=completed)
         if completed.returncode in {137, -signal.SIGKILL}:
             return self._execution_result("memory_limit_exceeded", 0, "memory limit exceeded", completed=completed)
@@ -367,7 +371,7 @@ class JudgeExecutor:
 
         if completed.returncode == 124:
             return TestcaseRunResult(order, self._execution_result("time_limit_exceeded", 0, f"time limit exceeded on testcase {order}", order, runtime_ms=runtime_ms, memory_kb=memory_kb))
-        if completed.returncode == 125:
+        if completed.returncode in _output_limit_returncodes:
             return TestcaseRunResult(order, self._execution_result("output_limit_exceeded", 0, f"output limit exceeded on testcase {order}", order, runtime_ms=runtime_ms, memory_kb=memory_kb))
         if completed.returncode in {137, -signal.SIGKILL}:
             return TestcaseRunResult(order, self._execution_result("memory_limit_exceeded", 0, f"memory limit exceeded on testcase {order}", order, runtime_ms=runtime_ms, memory_kb=memory_kb))
@@ -884,6 +888,8 @@ class JudgeExecutor:
             return 124
         if status == "SG":
             signal_number = int(meta.get("exitsig") or signal.SIGKILL)
+            if _sigxfsz is not None and signal_number == int(_sigxfsz):
+                return 125
             return 137 if signal_number == signal.SIGKILL else -signal_number
         if status and status not in {"OK", "RE"}:
             return 127
