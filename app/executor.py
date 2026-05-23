@@ -75,7 +75,8 @@ class JudgeExecutor:
         started_at = time.monotonic()
         job_id = str(job.get("judge_job_id") or "-")
         print(
-            f"[judge-agent] job={job_id} stage=hydrate:start language={language}",
+            f"[judge-agent] job={job_id} stage=hydrate:start language={language} "
+            f"initial_testcases={len(job.get('testcases') or [])} bundle_url={bool(job.get('bundle_url'))}",
             flush=True,
         )
         self._hydrate_job_bundle(job)
@@ -121,11 +122,13 @@ class JudgeExecutor:
             )
 
     def _hydrate_job_bundle(self, job: dict) -> None:
+        if job.get("testcases"):
+            return
         bundle_url = job.get("bundle_url")
         if not isinstance(bundle_url, str) or not bundle_url:
             return
         try:
-            raw = self._read_object_bytes(bundle_url, "")
+            raw = self._read_object_bytes(bundle_url, "", timeout=5)
             if raw[:2] == b"\x1f\x8b":
                 raw = gzip.decompress(raw)
             payload = json.loads(raw.decode("utf-8"))
@@ -133,8 +136,9 @@ class JudgeExecutor:
                 job["testcases"] = payload["testcases"]
             if isinstance(payload.get("package_files"), list):
                 job["package_files"] = payload["package_files"]
-        except Exception:
+        except Exception as error:
             # fall back to per-object flow
+            print(f"[judge-agent] bundle hydrate skipped: {error}", flush=True)
             return
 
     def _prepare_command(self, job_dir: Path, language: str, source_code: str) -> list[str] | ExecutionResult:
@@ -591,9 +595,9 @@ class JudgeExecutor:
             return normalized
         return f"{normalized[:limit]}\n...(truncated {len(normalized) - limit} chars)"
 
-    def _read_object_bytes(self, url: str | None, storage_key: str) -> bytes:
+    def _read_object_bytes(self, url: str | None, storage_key: str, timeout: float = 20) -> bytes:
         if url:
-            with urlopen(self._absolute_url(url), timeout=20) as response:
+            with urlopen(self._absolute_url(url), timeout=timeout) as response:
                 return response.read()
         path = Path(storage_key)
         if not path.is_absolute():
