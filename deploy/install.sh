@@ -85,40 +85,16 @@ prompt_value() {
   printf '%s' "${value:-$default_value}"
 }
 
-prompt_secret() {
-  local label="$1"
-  local default_value="$2"
-  local value
-  if [[ ! -t 0 ]]; then
-    printf '%s' "$default_value"
-    return
-  fi
-  if [[ -n "$default_value" && "$default_value" != "change-me-per-node" && "$default_value" != "change-me-very-strong-secret" ]]; then
-    read -r -s -p "$label [Enter면 현재 값 유지]: " value
-    echo
-    printf '%s' "${value:-$default_value}"
-  else
-    read -r -s -p "$label [비우면 자동 생성]: " value
-    echo
-    printf '%s' "$value"
-  fi
-}
-
 configure_inputs() {
   local existing_file="$1"
-  local internal_api_default
   local node_name_default
-  local secret_default
   local total_slots_default
   local testcase_parallelism_default
   local cpus_default
   local memory_default
 
-  internal_api_default="${INTERNAL_API_BASE_URL:-$(env_value "$existing_file" "INTERNAL_API_BASE_URL")}"
-  internal_api_default="${internal_api_default:-https://judge.zerone01.kr/api}"
   node_name_default="${JUDGE_NODE_NAME:-$(env_value "$existing_file" "JUDGE_NODE_NAME")}"
   node_name_default="${node_name_default:-zoj-judge-agent-0}"
-  secret_default="${JUDGE_NODE_SECRET:-$(env_value "$existing_file" "JUDGE_NODE_SECRET")}"
   total_slots_default="${JUDGE_TOTAL_SLOTS:-$(env_value "$existing_file" "JUDGE_TOTAL_SLOTS")}"
   total_slots_default="${total_slots_default:-8}"
   testcase_parallelism_default="${JUDGE_TESTCASE_PARALLELISM:-$(env_value "$existing_file" "JUDGE_TESTCASE_PARALLELISM")}"
@@ -131,18 +107,13 @@ configure_inputs() {
   echo
   echo "Judge agent configuration"
   echo "Press Enter to keep the shown default."
-  INTERNAL_API_BASE_URL="$(prompt_value "Backend internal API base URL" "$internal_api_default")"
   JUDGE_NODE_NAME="$(prompt_value "Judge node name" "$node_name_default")"
-  JUDGE_NODE_SECRET="$(prompt_secret "Judge node secret" "$secret_default")"
-  JUDGE_TOTAL_SLOTS="$(prompt_value "Concurrent submission slots" "$total_slots_default")"
-  JUDGE_TESTCASE_PARALLELISM="$(prompt_value "Parallel testcases per submission" "$testcase_parallelism_default")"
   JUDGE_AGENT_CONTAINER_CPUS="$(prompt_value "Container CPU limit" "$cpus_default")"
   JUDGE_AGENT_CONTAINER_MEMORY="$(prompt_value "Container memory limit" "$memory_default")"
-
-  if [[ -z "$JUDGE_NODE_SECRET" || "$JUDGE_NODE_SECRET" == "change-me-per-node" || "$JUDGE_NODE_SECRET" == "change-me-very-strong-secret" ]]; then
-    JUDGE_NODE_SECRET="$(generate_secret)"
-    echo "[bootstrap] JUDGE_NODE_SECRET not set -> generated automatically"
-  fi
+  JUDGE_TOTAL_SLOTS="$(prompt_value "Concurrent submission slots" "$total_slots_default")"
+  JUDGE_TESTCASE_PARALLELISM="$(prompt_value "Parallel testcases per submission" "$testcase_parallelism_default")"
+  JUDGE_NODE_SECRET="$(generate_secret)"
+  echo "[bootstrap] JUDGE_NODE_SECRET generated automatically"
 }
 
 if [[ ! -f "$COMPOSE_FILE" ]]; then
@@ -161,6 +132,8 @@ fi
 chmod 600 "$ENV_FILE"
 
 configure_inputs "$ENV_FILE"
+INTERNAL_API_BASE_URL="$(env_value "$ENV_FILE" "INTERNAL_API_BASE_URL")"
+INTERNAL_API_BASE_URL="${INTERNAL_API_BASE_URL:-https://judge.zerone01.kr/api}"
 
 log "apt update / install base packages"
 apt-get update
@@ -209,7 +182,6 @@ fi
 
 log "Configuring judge-agent env"
 upsert_env "$ENV_FILE" "APP_ENV" "production"
-upsert_env "$ENV_FILE" "INTERNAL_API_BASE_URL" "$INTERNAL_API_BASE_URL"
 upsert_env "$ENV_FILE" "JUDGE_NODE_NAME" "$JUDGE_NODE_NAME"
 upsert_env "$ENV_FILE" "JUDGE_NODE_SECRET" "$JUDGE_NODE_SECRET"
 upsert_env "$ENV_FILE" "JUDGE_TOTAL_SLOTS" "$JUDGE_TOTAL_SLOTS"
