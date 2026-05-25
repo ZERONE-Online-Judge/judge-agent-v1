@@ -8,6 +8,7 @@ from threading import Event, Thread
 
 from app.backend_client import BackendClient
 from app.executor import JudgeExecutor
+from app.log_forwarder import LogForwarder
 from app.settings import settings
 
 import subprocess
@@ -113,50 +114,55 @@ def main() -> None:
             print(f"[judge-agent] register failed: {error}")
             time.sleep(max(settings.poll_interval_seconds, 1.0))
 
-    print(f"[judge-agent] registered node={settings.node_name} id={node_id} slots={settings.total_slots}")
+    log_forwarder = LogForwarder(client, node_id)
+    log_forwarder.start()
+    try:
+        print(f"[judge-agent] registered node={settings.node_name} id={node_id} slots={settings.total_slots}")
 
-    with ThreadPoolExecutor(max_workers=settings.total_slots) as pool:
-        running = set()
-        last_heartbeat = 0.0
-        while True:
-            now = time.monotonic()
-            if now - last_heartbeat >= max(settings.heartbeat_interval_seconds, 0.5):
-                try:
-                    client.heartbeat(node_id, len(running))
-                    last_heartbeat = now
-                except RuntimeError as error:
-                    print(f"[judge-agent] heartbeat failed: {error}")
+        with ThreadPoolExecutor(max_workers=settings.total_slots) as pool:
+            running = set()
+            last_heartbeat = 0.0
+            while True:
+                now = time.monotonic()
+                if now - last_heartbeat >= max(settings.heartbeat_interval_seconds, 0.5):
+                    try:
+                        client.heartbeat(node_id, len(running))
+                        last_heartbeat = now
+                    except RuntimeError as error:
+                        print(f"[judge-agent] heartbeat failed: {error}")
 
-            done = set()
-            if running:
-                done, running = wait(running, timeout=0, return_when=FIRST_COMPLETED)
-            for future in done:
-                try:
-                    future.result()
-                except Exception as error:
-                    print(f"[judge-agent] job worker failed: {error}")
+                done = set()
+                if running:
+                    done, running = wait(running, timeout=0, return_when=FIRST_COMPLETED)
+                for future in done:
+                    try:
+                        future.result()
+                    except Exception as error:
+                        print(f"[judge-agent] job worker failed: {error}")
 
-            free_slots = settings.total_slots - len(running)
-            if free_slots > 0:
-                try:
-                    claimed = client.claim(node_id, free_slots)
-                except RuntimeError as error:
-                    print(f"[judge-agent] claim failed: {error}")
-                    time.sleep(settings.poll_interval_seconds)
-                    continue
-                for job in claimed:
-                    print(f"[judge-agent] claimed {job['judge_job_id']} submission={job['submission']['submission_id']}")
-                    running.add(pool.submit(judge_one, client, executor, job))
+                free_slots = settings.total_slots - len(running)
+                if free_slots > 0:
+                    try:
+                        claimed = client.claim(node_id, free_slots)
+                    except RuntimeError as error:
+                        print(f"[judge-agent] claim failed: {error}")
+                        time.sleep(settings.poll_interval_seconds)
+                        continue
+                    for job in claimed:
+                        print(f"[judge-agent] claimed {job['judge_job_id']} submission={job['submission']['submission_id']}")
+                        running.add(pool.submit(judge_one, client, executor, job))
 
-                if settings.run_once and not claimed and not running:
-                    print("[judge-agent] run once completed: no pending jobs")
+                    if settings.run_once and not claimed and not running:
+                        print("[judge-agent] run once completed: no pending jobs")
+                        return
+
+                if settings.run_once and not running:
+                    print("[judge-agent] run once completed")
                     return
 
-            if settings.run_once and not running:
-                print("[judge-agent] run once completed")
-                return
-
-            time.sleep(settings.poll_interval_seconds)
+                time.sleep(settings.poll_interval_seconds)
+    finally:
+        log_forwarder.close()
 
 
 if __name__ == "__main__":

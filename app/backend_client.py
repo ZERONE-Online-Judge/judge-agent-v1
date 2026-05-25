@@ -129,3 +129,14 @@ class BackendClient:
                 "lease_token": lease_token,
             },
         )
+
+    def report_logs(self, node_id: str, logs: list[dict[str, str]]) -> None:
+        self._request(
+            "POST",
+            f"/internal/judge/nodes/{node_id}/logs",
+            {
+                "node_secret": settings.node_secret,
+                "logs": logs,
+            },
+            timeout_seconds=5.0,
+        )
