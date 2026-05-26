@@ -169,7 +169,10 @@ class JudgeExecutor:
             )
         if language == "java8":
             return self._prepare_java(job_dir, source_code)
-        return ExecutionResult("system_error", None, f"unsupported language: {language}")
+        return ExecutionResult(
+            status="system_error",
+            message=f"unsupported language: {language}",
+        )
 
     def _prepare_python(self, job_dir: Path, source_code: str) -> list[str]:
         source = job_dir / "main.py"
@@ -181,7 +184,10 @@ class JudgeExecutor:
         compiled = self._run_command(compile_command, job_dir, timeout_seconds=20, sandbox_mode_override="local")
 
         if compiled.returncode != 0:
-            return ExecutionResult("compile_error", None, compiled.stderr[-4000:] or compiled.stdout[-4000:])
+            return ExecutionResult(
+                status="compile_error",
+                message=compiled.stderr[-4000:] or compiled.stdout[-4000:],
+            )
         return run_command
 
     def _prepare_java(self, job_dir: Path, source_code: str) -> list[str] | ExecutionResult:
@@ -204,7 +210,10 @@ class JudgeExecutor:
             sandbox_mode_override="local",
         )
         if compiled.returncode != 0:
-            return ExecutionResult("compile_error", None, compiled.stderr[-4000:] or compiled.stdout[-4000:])
+            return ExecutionResult(
+                status="compile_error",
+                message=compiled.stderr[-4000:] or compiled.stdout[-4000:],
+            )
         return ["/usr/bin/java", "-cp", str(job_dir), "Main"]
 
     def _run_final(self, command: list[str], job_dir: Path, job: dict) -> ExecutionResult:
@@ -473,7 +482,10 @@ class JudgeExecutor:
                 return cached
             shutil.copy2(cached, checker_dir / "checker")
             return PreparedChecker([str(checker_dir / "checker")], checker_dir, cached_binary=cached)
-        return ExecutionResult("system_error", None, f"unsupported checker file: {filename}")
+        return ExecutionResult(
+            status="system_error",
+            message=f"unsupported checker file: {filename}",
+        )
 
     def _checker_cache_key_from_storage(self, checker_storage_key: str, resource_storage_keys: list[str]) -> str:
         digest = hashlib.sha256()
@@ -518,7 +530,10 @@ class JudgeExecutor:
         elif suffix == ".c":
             compile_cmd = ["/usr/bin/gcc", "-B/usr/bin", "-std=c99", "-O2", filename, "-o", "checker"]
         else:
-            return ExecutionResult("system_error", None, f"unsupported checker file: {filename}")
+            return ExecutionResult(
+                status="system_error",
+                message=f"unsupported checker file: {filename}",
+            )
 
         compiled = self._run_command(
             compile_cmd,
@@ -527,9 +542,15 @@ class JudgeExecutor:
             sandbox_mode_override="local"
         )
         if compiled.returncode != 0:
-            return ExecutionResult("system_error", None, "checker compile failed: " + (compiled.stderr or compiled.stdout)[-4000:])
+            return ExecutionResult(
+                status="system_error",
+                message="checker compile failed: " + (compiled.stderr or compiled.stdout)[-4000:],
+            )
         if not binary_path.exists():
-            return ExecutionResult("system_error", None, "checker compile failed: checker binary missing")
+            return ExecutionResult(
+                status="system_error",
+                message="checker compile failed: checker binary missing",
+            )
         return binary_path
 
     def _run_checker(
@@ -565,10 +586,9 @@ class JudgeExecutor:
             return None
         detail = (completed.stderr or completed.stdout or f"checker rejected testcase {order}")[-4000:]
         return ExecutionResult(
-            "wrong_answer",
-            0,
-            self._build_wrong_answer_message(order, case_label, detail, input_text, expected, actual, source_hash=source_hash),
-            order,
+            status="wrong_answer",
+            message=self._build_wrong_answer_message(order, case_label, detail, input_text, expected, actual, source_hash=source_hash),
+            failed_testcase_order=order,
         )
 
     def _testcase_label(self, testcase: dict) -> str:
