@@ -17,7 +17,6 @@ def test_python_submission_accepts(tmp_path: Path):
     )
 
     assert result.status == "accepted"
-    assert result.score == 100
     assert result.runtime_ms is not None
 
 
@@ -35,7 +34,6 @@ def test_python_runtime_error(tmp_path: Path):
     )
 
     assert result.status == "runtime_error"
-    assert result.score == 0
 
 
 def test_python_testcase_accepts(tmp_path: Path):
@@ -64,7 +62,6 @@ def test_python_testcase_accepts(tmp_path: Path):
     )
 
     assert result.status == "accepted"
-    assert result.score == 100
     assert result.runtime_ms is not None
 
 
@@ -94,7 +91,6 @@ def test_python_testcase_wrong_answer(tmp_path: Path):
     )
 
     assert result.status == "wrong_answer"
-    assert result.score == 0
 
 
 def test_python_testcase_reads_file_url(tmp_path: Path):
@@ -127,7 +123,7 @@ def test_python_testcase_reads_file_url(tmp_path: Path):
     assert result.status == "accepted"
 
 
-def test_testcase_uses_problem_score_and_time_limit(tmp_path: Path):
+def test_testcase_uses_problem_time_limit(tmp_path: Path):
     input_path = tmp_path / "input.txt"
     output_path = tmp_path / "output.txt"
     input_path.write_text("", encoding="utf-8")
@@ -137,7 +133,7 @@ def test_testcase_uses_problem_score_and_time_limit(tmp_path: Path):
     result = executor.judge(
         {
             "judge_job_id": "job-timeout",
-            "problem": {"max_score": 70, "time_limit_ms": 100},
+            "problem": {"time_limit_ms": 100},
             "submission": {
                 "submission_id": "submission-timeout",
                 "language": "python313",
@@ -154,7 +150,6 @@ def test_testcase_uses_problem_score_and_time_limit(tmp_path: Path):
     )
 
     assert result.status == "time_limit_exceeded"
-    assert result.score == 0
 
 
 def test_testcase_progress_callback_reports_completed_cases(tmp_path: Path):
@@ -172,7 +167,7 @@ def test_testcase_progress_callback_reports_completed_cases(tmp_path: Path):
     result = executor.judge(
         {
             "judge_job_id": "job-progress",
-            "problem": {"max_score": 100, "time_limit_ms": 1000},
+            "problem": {"time_limit_ms": 1000},
             "submission": {
                 "submission_id": "submission-progress",
                 "language": "python313",
@@ -219,7 +214,7 @@ def test_parallel_testcases_report_progress_by_completed_count(tmp_path: Path):
     result = executor.judge(
         {
             "judge_job_id": "job-parallel-progress",
-            "problem": {"max_score": 100, "time_limit_ms": 1000},
+            "problem": {"time_limit_ms": 1000},
             "submission": {
                 "submission_id": "submission-parallel-progress",
                 "language": "python313",
@@ -270,7 +265,7 @@ def test_parallel_testcases_return_first_failing_display_order(tmp_path: Path):
     result = executor.judge(
         {
             "judge_job_id": "job-parallel-first-failure",
-            "problem": {"max_score": 100, "time_limit_ms": 1000},
+            "problem": {"time_limit_ms": 1000},
             "submission": {
                 "submission_id": "submission-parallel-first-failure",
                 "language": "python313",
@@ -301,7 +296,7 @@ def test_testcase_accepts_with_custom_checker(tmp_path: Path):
     result = executor.judge(
         {
             "judge_job_id": "job-custom-checker",
-            "problem": {"max_score": 80, "time_limit_ms": 1000},
+            "problem": {"time_limit_ms": 1000},
             "submission": {
                 "submission_id": "submission-custom-checker",
                 "language": "python313",
@@ -325,7 +320,6 @@ def test_testcase_accepts_with_custom_checker(tmp_path: Path):
     )
 
     assert result.status == "accepted"
-    assert result.score == 80
 
 
 def test_output_limit_exceeded(tmp_path: Path):
@@ -342,7 +336,6 @@ def test_output_limit_exceeded(tmp_path: Path):
     )
 
     assert result.status == "output_limit_exceeded"
-    assert result.score == 0
 
 
 def test_isolate_meta_maps_timeout_to_tle(tmp_path: Path):

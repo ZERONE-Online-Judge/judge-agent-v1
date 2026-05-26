@@ -31,7 +31,6 @@ if _sigxfsz is not None:
 @dataclass(frozen=True)
 class ExecutionResult:
     status: str
-    score: int | None
     message: str | None = None
     failed_testcase_order: int | None = None
     runtime_ms: int | None = None
@@ -217,14 +216,14 @@ class JudgeExecutor:
             memory_limit_mb=self._problem_memory_limit_mb(job),
         )
         if completed.returncode == 0:
-            return self._execution_result("accepted", self._problem_max_score(job), None, completed=completed)
+            return self._execution_result("accepted", None, completed=completed)
         if completed.returncode == 124:
-            return self._execution_result("time_limit_exceeded", 0, "time limit exceeded", completed=completed)
+            return self._execution_result("time_limit_exceeded", "time limit exceeded", completed=completed)
         if completed.returncode in _output_limit_returncodes:
-            return self._execution_result("output_limit_exceeded", 0, "output limit exceeded", completed=completed)
+            return self._execution_result("output_limit_exceeded", "output limit exceeded", completed=completed)
         if completed.returncode in {137, -signal.SIGKILL}:
-            return self._execution_result("memory_limit_exceeded", 0, "memory limit exceeded", completed=completed)
-        return self._execution_result("runtime_error", 0, completed.stderr[-4000:] or completed.stdout[-4000:], completed=completed)
+            return self._execution_result("memory_limit_exceeded", "memory limit exceeded", completed=completed)
+        return self._execution_result("runtime_error", completed.stderr[-4000:] or completed.stdout[-4000:], completed=completed)
 
     def _run_testcases(
         self,
@@ -266,7 +265,6 @@ class JudgeExecutor:
                 if result.result.status != "accepted":
                     return self._execution_result(
                         result.result.status,
-                        result.result.score,
                         result.result.message,
                         result.result.failed_testcase_order,
                         runtime_ms=max_runtime_ms,
@@ -279,7 +277,7 @@ class JudgeExecutor:
                     f"runtime_ms={result.result.runtime_ms} memory_kb={result.result.memory_kb} done={index}/{total}",
                     flush=True,
                 )
-            return self._execution_result("accepted", self._problem_max_score(job), None, runtime_ms=max_runtime_ms, memory_kb=max_memory_kb)
+            return self._execution_result("accepted", None, runtime_ms=max_runtime_ms, memory_kb=max_memory_kb)
 
         completed_count = 0
         with ThreadPoolExecutor(max_workers=worker_count) as pool:
@@ -317,13 +315,12 @@ class JudgeExecutor:
                     if result.result.status != "accepted":
                         return self._execution_result(
                             result.result.status,
-                            result.result.score,
                             result.result.message,
                             result.result.failed_testcase_order,
                             runtime_ms=max_runtime_ms,
                             memory_kb=max_memory_kb,
                         )
-        return self._execution_result("accepted", self._problem_max_score(job), None, runtime_ms=max_runtime_ms, memory_kb=max_memory_kb)
+        return self._execution_result("accepted", None, runtime_ms=max_runtime_ms, memory_kb=max_memory_kb)
     def _run_single_testcase(
         self,
         command: list[str],
@@ -365,18 +362,18 @@ class JudgeExecutor:
         except Exception as error:
             message = f"testcase {order} system error: {type(error).__name__}: {error}"
             print(f"[judge-agent] job={job_id} testcase={order} status=system_error error={message}", flush=True)
-            return TestcaseRunResult(order, self._execution_result("system_error", 0, message[-4000:], order))
+            return TestcaseRunResult(order, self._execution_result("system_error", message[-4000:], order))
         runtime_ms = getattr(completed, "runtime_ms", None)
         memory_kb = getattr(completed, "memory_kb", None)
 
         if completed.returncode == 124:
-            return TestcaseRunResult(order, self._execution_result("time_limit_exceeded", 0, f"time limit exceeded on testcase {order}", order, runtime_ms=runtime_ms, memory_kb=memory_kb))
+            return TestcaseRunResult(order, self._execution_result("time_limit_exceeded", f"time limit exceeded on testcase {order}", order, runtime_ms=runtime_ms, memory_kb=memory_kb))
         if completed.returncode in _output_limit_returncodes:
-            return TestcaseRunResult(order, self._execution_result("output_limit_exceeded", 0, f"output limit exceeded on testcase {order}", order, runtime_ms=runtime_ms, memory_kb=memory_kb))
+            return TestcaseRunResult(order, self._execution_result("output_limit_exceeded", f"output limit exceeded on testcase {order}", order, runtime_ms=runtime_ms, memory_kb=memory_kb))
         if completed.returncode in {137, -signal.SIGKILL}:
-            return TestcaseRunResult(order, self._execution_result("memory_limit_exceeded", 0, f"memory limit exceeded on testcase {order}", order, runtime_ms=runtime_ms, memory_kb=memory_kb))
+            return TestcaseRunResult(order, self._execution_result("memory_limit_exceeded", f"memory limit exceeded on testcase {order}", order, runtime_ms=runtime_ms, memory_kb=memory_kb))
         if completed.returncode != 0:
-            return TestcaseRunResult(order, self._execution_result("runtime_error", 0, (completed.stderr or completed.stdout)[-4000:], order, runtime_ms=runtime_ms, memory_kb=memory_kb))
+            return TestcaseRunResult(order, self._execution_result("runtime_error", (completed.stderr or completed.stdout)[-4000:], order, runtime_ms=runtime_ms, memory_kb=memory_kb))
         case_label = self._testcase_label(testcase)
         if checker:
             checker_result = self._run_checker(
@@ -391,8 +388,8 @@ class JudgeExecutor:
                 sandbox_container_id=None,
             )
             if checker_result:
-                return TestcaseRunResult(order, self._execution_result(checker_result.status, checker_result.score, checker_result.message, checker_result.failed_testcase_order, runtime_ms=runtime_ms, memory_kb=memory_kb))
-            return TestcaseRunResult(order, self._execution_result("accepted", self._problem_max_score(job), None, runtime_ms=runtime_ms, memory_kb=memory_kb))
+                return TestcaseRunResult(order, self._execution_result(checker_result.status, checker_result.message, checker_result.failed_testcase_order, runtime_ms=runtime_ms, memory_kb=memory_kb))
+            return TestcaseRunResult(order, self._execution_result("accepted", None, runtime_ms=runtime_ms, memory_kb=memory_kb))
         expected = self._normalize_output(expected_text)
         actual = self._normalize_output(completed.stdout)
         if actual != expected:
@@ -400,7 +397,6 @@ class JudgeExecutor:
                 order,
                 self._execution_result(
                     "wrong_answer",
-                    0,
                     self._build_wrong_answer_message(
                         order,
                         case_label,
@@ -417,7 +413,7 @@ class JudgeExecutor:
                     memory_kb=memory_kb,
                 ),
             )
-        return TestcaseRunResult(order, self._execution_result("accepted", self._problem_max_score(job), None, runtime_ms=runtime_ms, memory_kb=memory_kb))
+        return TestcaseRunResult(order, self._execution_result("accepted", None, runtime_ms=runtime_ms, memory_kb=memory_kb))
 
     def _prepare_checker(self, job_dir: Path, package_files: list[dict]) -> PreparedChecker | ExecutionResult | None:
         checker_files = [item for item in package_files if item.get("role") == "checker"]
@@ -647,10 +643,6 @@ class JudgeExecutor:
         if url.startswith("/"):
             return urljoin(settings.internal_api_base_url.rstrip("/") + "/", url)
         return url
-
-    def _problem_max_score(self, job: dict) -> int:
-        problem = job.get("problem") or {}
-        return int(problem.get("max_score") or 100)
 
     def _problem_time_limit_seconds(self, job: dict) -> float:
         problem = job.get("problem") or {}
@@ -1065,7 +1057,6 @@ class JudgeExecutor:
     def _execution_result(
         self,
         status: str,
-        score: int | None,
         message: str | None = None,
         failed_testcase_order: int | None = None,
         completed: subprocess.CompletedProcess[str] | None = None,
@@ -1074,7 +1065,6 @@ class JudgeExecutor:
     ) -> ExecutionResult:
         return ExecutionResult(
             status,
-            score,
             message,
             failed_testcase_order,
             runtime_ms=self._max_metric(runtime_ms, getattr(completed, "runtime_ms", None) if completed else None),
