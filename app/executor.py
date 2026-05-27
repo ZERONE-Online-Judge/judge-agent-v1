@@ -818,7 +818,7 @@ class JudgeExecutor:
                 f"--box-id={box_id}",
                 f"--meta={meta_path}",
                 f"--time={timeout_seconds}",
-                f"--wall-time={timeout_seconds + 1}",
+                f"--wall-time={self._isolate_wall_time_seconds(timeout_seconds)}",
                 "--extra-time=0",
                 f"--cg-mem={memory_limit_mb * 1024}",
                 f"--fsize={max(1, self.output_limit_bytes // 1024)}",
@@ -941,6 +941,9 @@ class JudgeExecutor:
         if returncode == 137 or "cg-oom-killed" in meta:
             return "memory limit exceeded"
         return meta.get("message", "")
+
+    def _isolate_wall_time_seconds(self, timeout_seconds: float) -> float:
+        return max(timeout_seconds, 0.1)
 
     def _is_memory_limit_result(
         self,

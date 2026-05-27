@@ -11,7 +11,7 @@ class Settings:
     total_slots: int = int(os.getenv("JUDGE_TOTAL_SLOTS", "2"))
     testcase_parallelism: int = int(os.getenv("JUDGE_TESTCASE_PARALLELISM", "4"))
     work_root: Path = Path(os.getenv("JUDGE_WORK_ROOT", "/tmp/zerone-judge"))
-    agent_version: str = "0.2.14"
+    agent_version: str = "0.2.15"
     poll_interval_seconds: float = float(os.getenv("JUDGE_POLL_INTERVAL_SECONDS", "1"))
     long_poll_seconds: float = float(os.getenv("JUDGE_LONG_POLL_SECONDS", "20"))
     heartbeat_interval_seconds: float = float(os.getenv("JUDGE_HEARTBEAT_INTERVAL_SECONDS", "2"))

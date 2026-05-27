@@ -365,6 +365,13 @@ def test_isolate_meta_parses_runtime_and_memory(tmp_path: Path):
     assert executor._isolate_memory_kb({"cg-mem": "4096", "max-rss": "2048"}) == 4096
 
 
+def test_isolate_wall_time_matches_problem_limit(tmp_path: Path):
+    executor = JudgeExecutor(tmp_path, sandbox_mode="isolate")
+
+    assert executor._isolate_wall_time_seconds(1.0) == 1.0
+    assert executor._isolate_wall_time_seconds(0.05) == 0.1
+
+
 def test_completed_process_reports_wall_runtime(tmp_path: Path):
     executor = JudgeExecutor(tmp_path, sandbox_mode="isolate")
     stdout_path = tmp_path / "stdout.txt"
