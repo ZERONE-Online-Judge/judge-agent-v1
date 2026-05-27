@@ -862,7 +862,6 @@ class JudgeExecutor:
                 memory_kb=self._isolate_memory_kb(meta),
                 fallback_stderr=self._isolate_message(meta, returncode),
             )
-            completed.runtime_ms = self._isolate_reported_runtime_ms(meta, returncode, completed.runtime_ms)
             return completed
         except FileNotFoundError as error:
             return subprocess.CompletedProcess(command, 127, "", str(error))
@@ -929,16 +928,6 @@ class JudgeExecutor:
             return max(0, int(float(meta.get("time") or "0") * 1000))
         except ValueError:
             return None
-
-    def _isolate_reported_runtime_ms(
-        self,
-        meta: dict[str, str],
-        returncode: int,
-        wall_runtime_ms: int | None,
-    ) -> int | None:
-        if returncode == 124:
-            return wall_runtime_ms
-        return self._isolate_runtime_ms(meta) or wall_runtime_ms
 
     def _isolate_memory_kb(self, meta: dict[str, str]) -> int | None:
         try:
