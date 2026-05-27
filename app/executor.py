@@ -230,7 +230,7 @@ class JudgeExecutor:
             return self._execution_result("time_limit_exceeded", "time limit exceeded", completed=completed)
         if completed.returncode in _output_limit_returncodes:
             return self._execution_result("output_limit_exceeded", "output limit exceeded", completed=completed)
-        if completed.returncode in {137, -signal.SIGKILL}:
+        if self._is_memory_limit_result(completed):
             return self._execution_result("memory_limit_exceeded", "memory limit exceeded", completed=completed)
         return self._execution_result("runtime_error", completed.stderr[-4000:] or completed.stdout[-4000:], completed=completed)
 
@@ -379,7 +379,7 @@ class JudgeExecutor:
             return TestcaseRunResult(order, self._execution_result("time_limit_exceeded", f"time limit exceeded on testcase {order}", order, runtime_ms=runtime_ms, memory_kb=memory_kb))
         if completed.returncode in _output_limit_returncodes:
             return TestcaseRunResult(order, self._execution_result("output_limit_exceeded", f"output limit exceeded on testcase {order}", order, runtime_ms=runtime_ms, memory_kb=memory_kb))
-        if completed.returncode in {137, -signal.SIGKILL}:
+        if self._is_memory_limit_result(completed):
             return TestcaseRunResult(order, self._execution_result("memory_limit_exceeded", f"memory limit exceeded on testcase {order}", order, runtime_ms=runtime_ms, memory_kb=memory_kb))
         if completed.returncode != 0:
             return TestcaseRunResult(order, self._execution_result("runtime_error", (completed.stderr or completed.stdout)[-4000:], order, runtime_ms=runtime_ms, memory_kb=memory_kb))
@@ -932,6 +932,26 @@ class JudgeExecutor:
         if returncode == 137 or "cg-oom-killed" in meta:
             return "memory limit exceeded"
         return meta.get("message", "")
+
+    def _is_memory_limit_result(
+        self,
+        completed: subprocess.CompletedProcess[str],
+    ) -> bool:
+        if completed.returncode in {137, -signal.SIGKILL}:
+            return True
+
+        command = list(completed.args) if isinstance(completed.args, list) else []
+        executable = Path(str(command[0])).name if command else ""
+        if executable != "java":
+            return False
+
+        output = "\n".join([completed.stderr or "", completed.stdout or ""])
+        java_memory_errors = (
+            "java.lang.OutOfMemoryError",
+            "Java heap space",
+            "GC overhead limit exceeded",
+        )
+        return any(marker in output for marker in java_memory_errors)
 
     def _command_with_runtime_limits(self, command: list[str], memory_limit_mb: int) -> list[str]:
         if not command:

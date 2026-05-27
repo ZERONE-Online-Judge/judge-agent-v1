@@ -1,4 +1,5 @@
 from pathlib import Path
+import subprocess
 
 from app.executor import JudgeExecutor
 
@@ -393,6 +394,24 @@ def test_java_command_gets_conservative_heap_limit(tmp_path: Path):
         "-XX:CompressedClassSpaceSize=16m",
         "-XX:MaxMetaspaceSize=64m",
     ]
+
+
+def test_java_heap_oom_maps_to_memory_limit(tmp_path: Path):
+    executor = JudgeExecutor(tmp_path, sandbox_mode="isolate")
+    completed = subprocess.CompletedProcess(
+        ["/usr/bin/java", "-cp", "/work/job", "Main"],
+        1,
+        "",
+        "Exception in thread \"main\" java.lang.OutOfMemoryError: Java heap space",
+    )
+
+    assert executor._is_memory_limit_result(completed)
+
+
+def test_java_heap_for_256mb_problem_is_conservative(tmp_path: Path):
+    executor = JudgeExecutor(tmp_path, sandbox_mode="isolate")
+
+    assert executor._java_heap_mb(256) == 64
 
 
 def test_isolate_mounts_java_symlink_chain(tmp_path: Path):
