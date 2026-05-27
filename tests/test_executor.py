@@ -379,6 +379,27 @@ def test_memory_limit_uses_problem_and_testcase_values(tmp_path: Path):
     )
 
 
+def test_problem_limits_use_language_overrides(tmp_path: Path):
+    executor = JudgeExecutor(tmp_path, sandbox_mode="isolate")
+    job = {
+        "problem": {
+            "time_limit_ms": 1000,
+            "memory_limit_mb": 256,
+            "language_resource_limits": {
+                "python313": {"time_limit_ms": 2500, "memory_limit_mb": 512}
+            },
+        },
+        "submission": {"language": "python313"},
+    }
+
+    assert executor._problem_time_limit_seconds(job) == 2.5
+    assert executor._problem_memory_limit_mb(job) == 512
+    assert executor._testcase_time_limit_seconds(job, {}) == 2.5
+    assert executor._testcase_memory_limit_mb(job, {}) == 512
+    assert executor._testcase_time_limit_seconds(job, {"time_limit_ms_override": 300}) == 0.3
+    assert executor._testcase_memory_limit_mb(job, {"memory_limit_mb_override": 128}) == 128
+
+
 def test_java_command_gets_conservative_heap_limit(tmp_path: Path):
     executor = JudgeExecutor(tmp_path, sandbox_mode="isolate")
     command = executor._command_with_runtime_limits(

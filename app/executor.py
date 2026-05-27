@@ -666,7 +666,12 @@ class JudgeExecutor:
 
     def _problem_time_limit_seconds(self, job: dict) -> float:
         problem = job.get("problem") or {}
-        value = problem.get("time_limit_ms")
+        language = (job.get("submission") or {}).get("language")
+        language_limits = problem.get("language_resource_limits") or {}
+        language_limit = language_limits.get(language) if isinstance(language_limits, dict) else None
+        value = language_limit.get("time_limit_ms") if isinstance(language_limit, dict) else None
+        if value is None:
+            value = problem.get("time_limit_ms")
         if value:
             return max(float(value) / 1000, 0.1)
         return settings.default_time_limit_seconds
@@ -679,7 +684,12 @@ class JudgeExecutor:
 
     def _problem_memory_limit_mb(self, job: dict) -> int:
         problem = job.get("problem") or {}
-        value = problem.get("memory_limit_mb")
+        language = (job.get("submission") or {}).get("language")
+        language_limits = problem.get("language_resource_limits") or {}
+        language_limit = language_limits.get(language) if isinstance(language_limits, dict) else None
+        value = language_limit.get("memory_limit_mb") if isinstance(language_limit, dict) else None
+        if value is None:
+            value = problem.get("memory_limit_mb")
         if value:
             return max(int(value), 16)
         return settings.sandbox_memory_mb
