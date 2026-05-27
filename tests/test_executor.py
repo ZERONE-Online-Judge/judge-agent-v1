@@ -400,6 +400,116 @@ def test_problem_limits_use_language_overrides(tmp_path: Path):
     assert executor._testcase_memory_limit_mb(job, {"memory_limit_mb_override": 128}) == 128
 
 
+def test_language_time_limit_override_is_used_during_judging(tmp_path: Path):
+    input_path = tmp_path / "input.txt"
+    output_path = tmp_path / "output.txt"
+    input_path.write_text("", encoding="utf-8")
+    output_path.write_text("", encoding="utf-8")
+
+    executor = JudgeExecutor(tmp_path, sandbox_mode="local")
+    result = executor.judge(
+        {
+            "judge_job_id": "job-language-timeout",
+            "problem": {
+                "time_limit_ms": 2000,
+                "language_resource_limits": {
+                    "python313": {"time_limit_ms": 100},
+                },
+            },
+            "submission": {
+                "submission_id": "submission-language-timeout",
+                "language": "python313",
+                "source_code": "while True:\n    pass\n",
+            },
+            "testcases": [
+                {
+                    "display_order": 1,
+                    "input_storage_key": str(input_path),
+                    "output_storage_key": str(output_path),
+                }
+            ],
+        }
+    )
+
+    assert result.status == "time_limit_exceeded"
+
+
+def test_language_resource_overrides_are_passed_to_testcase_runner(tmp_path: Path):
+    input_path = tmp_path / "input.txt"
+    output_path = tmp_path / "output.txt"
+    input_path.write_text("", encoding="utf-8")
+    output_path.write_text("42\n", encoding="utf-8")
+
+    class CapturingExecutor(JudgeExecutor):
+        def __init__(self, work_root: Path) -> None:
+            super().__init__(work_root, sandbox_mode="local")
+            self.run_calls: list[tuple[float, int | None]] = []
+
+        def _run_command(
+            self,
+            command: list[str],
+            cwd: Path,
+            timeout_seconds: float,
+            stdin: str = "",
+            sandbox_mode_override: str | None = None,
+            sandbox_container_id: str | None = None,
+            sandbox_mount_root: Path | None = None,
+            memory_limit_mb: int | None = None,
+        ) -> subprocess.CompletedProcess[str]:
+            self.run_calls.append((timeout_seconds, memory_limit_mb))
+            completed = subprocess.CompletedProcess(command, 0, "42\n", "")
+            completed.runtime_ms = 1
+            completed.memory_kb = 1024
+            return completed
+
+    executor = CapturingExecutor(tmp_path)
+    result = executor.judge(
+        {
+            "judge_job_id": "job-language-resource-capture",
+            "problem": {
+                "time_limit_ms": 2000,
+                "memory_limit_mb": 256,
+                "language_resource_limits": {
+                    "python313": {"time_limit_ms": 750, "memory_limit_mb": 384},
+                    "java8": {"time_limit_ms": 3000, "memory_limit_mb": 512},
+                },
+            },
+            "submission": {
+                "submission_id": "submission-language-resource-capture",
+                "language": "python313",
+                "source_code": "print(42)",
+            },
+            "testcases": [
+                {
+                    "display_order": 1,
+                    "input_storage_key": str(input_path),
+                    "output_storage_key": str(output_path),
+                }
+            ],
+        }
+    )
+
+    assert result.status == "accepted"
+    assert executor.run_calls == [(0.75, 384)]
+
+
+def test_other_language_resource_overrides_do_not_apply(tmp_path: Path):
+    executor = JudgeExecutor(tmp_path, sandbox_mode="isolate")
+    job = {
+        "problem": {
+            "time_limit_ms": 1000,
+            "memory_limit_mb": 256,
+            "language_resource_limits": {
+                "java8": {"time_limit_ms": 3000, "memory_limit_mb": 512},
+            },
+        },
+        "submission": {"language": "python313"},
+    }
+
+    assert executor._problem_time_limit_seconds(job) == 1.0
+    assert executor._problem_memory_limit_mb(job) == 256
+
+
 def test_java_command_gets_conservative_heap_limit(tmp_path: Path):
     executor = JudgeExecutor(tmp_path, sandbox_mode="isolate")
     command = executor._command_with_runtime_limits(
