@@ -387,7 +387,7 @@ def test_java_command_gets_conservative_heap_limit(tmp_path: Path):
     )
 
     assert command[1:7] == [
-        "-Xmx96m",
+        "-Xmx256m",
         "-Xss256k",
         "-XX:+UseSerialGC",
         "-XX:ReservedCodeCacheSize=32m",
@@ -408,10 +408,14 @@ def test_java_heap_oom_maps_to_memory_limit(tmp_path: Path):
     assert executor._is_memory_limit_result(completed)
 
 
-def test_java_heap_for_256mb_problem_is_conservative(tmp_path: Path):
+def test_java_heap_scales_with_problem_memory(tmp_path: Path):
     executor = JudgeExecutor(tmp_path, sandbox_mode="isolate")
 
-    assert executor._java_heap_mb(256) == 64
+    assert executor._java_heap_mb(128) == 64
+    assert executor._java_heap_mb(256) == 128
+    assert executor._java_heap_mb(512) == 256
+    assert executor._java_heap_mb(1024) == 512
+    assert executor._java_heap_mb(2048) == 512
 
 
 def test_isolate_mounts_java_symlink_chain(tmp_path: Path):

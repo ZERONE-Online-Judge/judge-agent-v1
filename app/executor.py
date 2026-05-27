@@ -974,10 +974,12 @@ class JudgeExecutor:
 
     def _java_heap_mb(self, memory_limit_mb: int) -> int:
         if memory_limit_mb <= 128:
-            return 32
+            return 64
+        if memory_limit_mb <= 256:
+            return 128
         if memory_limit_mb <= 512:
-            return max(48, min(96, memory_limit_mb // 4))
-        return max(96, min(192, memory_limit_mb // 3))
+            return 256
+        return max(256, min(512, int(memory_limit_mb * 0.6)))
 
     def _isolate_system_dir_args(self, command: list[str]) -> list[str]:
         executable = Path(command[0]).name if command else ""
