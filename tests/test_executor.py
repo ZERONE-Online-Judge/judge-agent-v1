@@ -364,6 +364,13 @@ def test_isolate_meta_parses_runtime_and_memory(tmp_path: Path):
     assert executor._isolate_memory_kb({"cg-mem": "4096", "max-rss": "2048"}) == 4096
 
 
+def test_isolate_timeout_reports_wall_runtime(tmp_path: Path):
+    executor = JudgeExecutor(tmp_path, sandbox_mode="isolate")
+
+    assert executor._isolate_reported_runtime_ms({"time": "0.022"}, 124, 3000) == 3000
+    assert executor._isolate_reported_runtime_ms({"time": "0.022"}, 0, 3000) == 22
+
+
 def test_memory_limit_uses_problem_and_testcase_values(tmp_path: Path):
     executor = JudgeExecutor(tmp_path, sandbox_mode="isolate")
     job = {"problem": {"memory_limit_mb": 1024}}
