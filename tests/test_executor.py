@@ -428,6 +428,47 @@ def test_problem_limits_use_language_overrides(tmp_path: Path):
     assert executor._testcase_memory_limit_mb(job, {"memory_limit_mb_override": 128}) == 128
 
 
+def test_problem_limits_apply_language_adjustments(tmp_path: Path):
+    executor = JudgeExecutor(tmp_path, sandbox_mode="isolate")
+
+    java_job = {
+        "problem": {"time_limit_ms": 1000, "memory_limit_mb": 256},
+        "submission": {"language": "java8"},
+    }
+    python_job = {
+        "problem": {"time_limit_ms": 1000, "memory_limit_mb": 256},
+        "submission": {"language": "python313"},
+    }
+    cpp_job = {
+        "problem": {"time_limit_ms": 1000, "memory_limit_mb": 256},
+        "submission": {"language": "cpp17"},
+    }
+
+    assert executor._problem_time_limit_seconds(java_job) == 3.0
+    assert executor._problem_memory_limit_mb(java_job) == 528
+    assert executor._problem_time_limit_seconds(python_job) == 5.0
+    assert executor._problem_memory_limit_mb(python_job) == 544
+    assert executor._problem_time_limit_seconds(cpp_job) == 1.0
+    assert executor._problem_memory_limit_mb(cpp_job) == 256
+
+
+def test_language_overrides_win_over_default_adjustments(tmp_path: Path):
+    executor = JudgeExecutor(tmp_path, sandbox_mode="isolate")
+    job = {
+        "problem": {
+            "time_limit_ms": 1000,
+            "memory_limit_mb": 256,
+            "language_resource_limits": {
+                "java8": {"time_limit_ms": 1500},
+            },
+        },
+        "submission": {"language": "java8"},
+    }
+
+    assert executor._problem_time_limit_seconds(job) == 1.5
+    assert executor._problem_memory_limit_mb(job) == 528
+
+
 def test_language_time_limit_override_is_used_during_judging(tmp_path: Path):
     input_path = tmp_path / "input.txt"
     output_path = tmp_path / "output.txt"
@@ -521,7 +562,7 @@ def test_language_resource_overrides_are_passed_to_testcase_runner(tmp_path: Pat
     assert executor.run_calls == [(0.75, 384)]
 
 
-def test_other_language_resource_overrides_do_not_apply(tmp_path: Path):
+def test_other_language_overrides_do_not_replace_default_adjustments(tmp_path: Path):
     executor = JudgeExecutor(tmp_path, sandbox_mode="isolate")
     job = {
         "problem": {
@@ -534,8 +575,8 @@ def test_other_language_resource_overrides_do_not_apply(tmp_path: Path):
         "submission": {"language": "python313"},
     }
 
-    assert executor._problem_time_limit_seconds(job) == 1.0
-    assert executor._problem_memory_limit_mb(job) == 256
+    assert executor._problem_time_limit_seconds(job) == 5.0
+    assert executor._problem_memory_limit_mb(job) == 544
 
 
 def test_java_command_gets_conservative_heap_limit(tmp_path: Path):

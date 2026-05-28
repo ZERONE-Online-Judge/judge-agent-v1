@@ -27,6 +27,15 @@ _output_limit_returncodes = {125}
 if _sigxfsz is not None:
     _output_limit_returncodes.add(-int(_sigxfsz))
 
+_LANGUAGE_TIME_LIMIT_ADJUSTMENTS: dict[str, tuple[float, int]] = {
+    "java8": (2.0, 1000),
+    "python313": (3.0, 2000),
+}
+_LANGUAGE_MEMORY_LIMIT_ADJUSTMENTS: dict[str, tuple[float, int]] = {
+    "java8": (2.0, 16),
+    "python313": (2.0, 32),
+}
+
 
 @dataclass(frozen=True)
 class ExecutionResult:
@@ -671,8 +680,9 @@ class JudgeExecutor:
         language_limit = language_limits.get(language) if isinstance(language_limits, dict) else None
         value = language_limit.get("time_limit_ms") if isinstance(language_limit, dict) else None
         if value is None:
-            value = problem.get("time_limit_ms")
-        if value:
+            base_value = problem.get("time_limit_ms")
+            value = self._language_adjusted_time_limit_ms(language, base_value)
+        if value is not None:
             return max(float(value) / 1000, 0.1)
         return settings.default_time_limit_seconds
 
@@ -689,10 +699,31 @@ class JudgeExecutor:
         language_limit = language_limits.get(language) if isinstance(language_limits, dict) else None
         value = language_limit.get("memory_limit_mb") if isinstance(language_limit, dict) else None
         if value is None:
-            value = problem.get("memory_limit_mb")
-        if value:
+            base_value = problem.get("memory_limit_mb")
+            value = self._language_adjusted_memory_limit_mb(language, base_value)
+        if value is not None:
             return max(int(value), 16)
         return settings.sandbox_memory_mb
+
+    def _language_adjusted_time_limit_ms(self, language: str | None, base_value: object) -> float | None:
+        if base_value is None:
+            return None
+        value = float(base_value)
+        adjustment = _LANGUAGE_TIME_LIMIT_ADJUSTMENTS.get(str(language or ""))
+        if not adjustment:
+            return value
+        multiplier, bonus_ms = adjustment
+        return value * multiplier + bonus_ms
+
+    def _language_adjusted_memory_limit_mb(self, language: str | None, base_value: object) -> int | None:
+        if base_value is None:
+            return None
+        value = int(base_value)
+        adjustment = _LANGUAGE_MEMORY_LIMIT_ADJUSTMENTS.get(str(language or ""))
+        if not adjustment:
+            return value
+        multiplier, bonus_mb = adjustment
+        return int(value * multiplier + bonus_mb)
 
     def _testcase_memory_limit_mb(self, job: dict, testcase: dict) -> int:
         value = testcase.get("memory_limit_mb_override")
