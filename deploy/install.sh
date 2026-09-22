@@ -143,7 +143,7 @@ chmod 600 "$ENV_FILE"
 
 configure_inputs "$ENV_FILE"
 INTERNAL_API_BASE_URL="$(env_value "$ENV_FILE" "INTERNAL_API_BASE_URL")"
-INTERNAL_API_BASE_URL="${INTERNAL_API_BASE_URL:-https://judge.zerone01.kr/api}"
+INTERNAL_API_BASE_URL="${INTERNAL_API_BASE_URL:-https://zoj.kr/api}"
 
 log "apt update / install base packages"
 apt-get update

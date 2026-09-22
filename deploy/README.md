@@ -11,7 +11,7 @@ cp env/judge-agent.env.example env/judge-agent.env
 
 `env/judge-agent.env`에서 최소 아래 값은 반드시 수정하세요.
 
-- `INTERNAL_API_BASE_URL` (예: `https://judge.zerone01.kr/api`)
+- `INTERNAL_API_BASE_URL` (예: `https://zoj.kr/api`)
 - `JUDGE_NODE_NAME` (VM마다 고유)
 - `JUDGE_NODE_SECRET` (VM마다 고유)
 
