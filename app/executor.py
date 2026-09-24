@@ -14,11 +14,11 @@ import subprocess
 import tempfile
 import time
 import hashlib
-from urllib.parse import urljoin
 from urllib.request import urlopen
 from collections.abc import Callable
 
 from app.settings import settings
+from app.object_urls import resolve_object_url
 
 
 _isolate_box_counter = itertools.count()
@@ -669,9 +669,9 @@ class JudgeExecutor:
         return path.read_bytes()
 
     def _absolute_url(self, url: str) -> str:
-        if url.startswith("/"):
-            return urljoin(settings.internal_api_base_url.rstrip("/") + "/", url)
-        return url
+        return resolve_object_url(
+            url, settings.internal_api_base_url, os.getenv("JUDGE_OBJECT_URL_ORIGINS", "")
+        )
 
     def _problem_time_limit_seconds(self, job: dict) -> float:
         problem = job.get("problem") or {}
