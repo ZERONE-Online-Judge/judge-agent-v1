@@ -23,6 +23,7 @@ services:
         chmod 644 /run/isolate/cgroup
         exec python -m app.main
     volumes:
+      - ./env/judge-tls:/etc/zoj-tls:ro
       - /var/lib/zerone-judge:/var/lib/zerone-judge
       - /sys/fs/cgroup:/sys/fs/cgroup:rw
       - /run/isolate:/run/isolate:rw

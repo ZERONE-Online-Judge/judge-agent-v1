@@ -3,6 +3,13 @@
 # Restarts selected agents. No package/image downloads are required on agents.
 set -euo pipefail
 command -v sshpass >/dev/null || { echo 'sshpass가 필요합니다.' >&2; exit 1; }
+api_base=${ZOJ_INTERNAL_API_BASE_URL:-https://10.10.10.110:6443/api}
+tls_cert_b64=${ZOJ_INTERNAL_TLS_CERT_B64:-}
+case "$api_base" in
+  https://10.10.10.110:6443/api) test -n "$tls_cert_b64" || { echo '인증서가 포함된 use-internal-tls.sh로 실행하세요.' >&2; exit 1; } ;;
+  http://10.10.10.110:6001/api) ;;
+  *) echo '지원하지 않는 내부 API 주소입니다.' >&2; exit 1 ;;
+esac
 nodes=("$@")
 if [[ ${#nodes[@]} -eq 0 ]]; then nodes=(1 2 3 4 5 6 7); fi
 for n in "${nodes[@]}"; do
@@ -16,14 +23,19 @@ trap 'unset SSHPASS' EXIT
 remote_script=$(cat <<'REMOTE'
 set -euo pipefail
 cd "$1"
+api_base=$2
+tls_cert_b64=$3
 compose=(docker compose -f deploy/compose.yaml)
 cid=$("${compose[@]}" ps -q judge-agent)
 test -n "$cid" || { echo '실행 중인 judge-agent를 찾지 못했습니다.' >&2; exit 1; }
 
 # Verify connectivity from the actual container before changing anything.
-docker exec "$cid" python -c '
-import json, urllib.request
-with urllib.request.urlopen("http://10.10.10.110:6001/api/health", timeout=10) as r:
+docker exec -e ZOJ_RECOVERY_API="$api_base" -e ZOJ_RECOVERY_CERT="$tls_cert_b64" "$cid" python -c '
+import base64, json, os, ssl, urllib.request
+base = os.environ["ZOJ_RECOVERY_API"]
+cert = os.environ["ZOJ_RECOVERY_CERT"]
+context = ssl.create_default_context(cadata=base64.b64decode(cert).decode()) if cert else None
+with urllib.request.urlopen(base + "/health", timeout=10, context=context) as r:
     assert json.load(r)["data"]["status"] == "ok"
 print("내부 API 연결 확인 완료")
 '
@@ -33,6 +45,8 @@ backup="/var/backups/zoj-internal/$stamp"
 mkdir -p "$backup/context"
 chmod 700 "$backup" "$backup/context"
 cp -p deploy/env/judge-agent.env "$backup/judge-agent.env"
+cp -p deploy/compose.yaml "$backup/compose.yaml"
+if [[ -f deploy/env/judge-tls/ca-certificates.crt ]]; then cp -p deploy/env/judge-tls/ca-certificates.crt "$backup/ca-certificates.crt"; fi
 cp -p app/executor.py "$backup/source-executor.py"
 if [[ -f app/object_urls.py ]]; then cp -p app/object_urls.py "$backup/source-object_urls.py"; fi
 docker cp "$cid:/app/app/executor.py" "$backup/context/executor.py"
@@ -87,6 +101,13 @@ PY
 
 printf 'FROM %s\nCOPY executor.py /app/app/executor.py\nCOPY object_urls.py /app/app/object_urls.py\n' "$saved_image" > "$backup/context/Dockerfile"
 new_image="zerone-judge-agent:internal-$stamp"
+if [[ -n "$tls_cert_b64" ]]; then
+  python3 - "$tls_cert_b64" "$backup/context/judge-ca.crt" <<'PY'
+import base64, pathlib, sys
+pathlib.Path(sys.argv[2]).write_bytes(base64.b64decode(sys.argv[1], validate=True))
+PY
+  printf 'COPY judge-ca.crt /usr/local/share/ca-certificates/zoj-internal.crt\nRUN cat /usr/local/share/ca-certificates/zoj-internal.crt >> /etc/ssl/certs/ca-certificates.crt\n' >> "$backup/context/Dockerfile"
+fi
 DOCKER_BUILDKIT=0 docker build --network=none --pull=false -t "$new_image" "$backup/context"
 docker run --rm --entrypoint python "$new_image" -c '
 from app.object_urls import resolve_object_url
@@ -97,6 +118,12 @@ assert resolve_object_url("https://zoj.kr/minio/b/a%20b?sig=a%2Fb", "http://10.1
 # Keep a standalone rollback command, including the original image tag and env.
 printf '#!/usr/bin/env bash\nset -euo pipefail\ncd %q\n' "$PWD" > "$backup/rollback.sh"
 printf 'cp -p %q deploy/env/judge-agent.env\ncp -p %q app/executor.py\n' "$backup/judge-agent.env" "$backup/source-executor.py" >> "$backup/rollback.sh"
+printf 'cp -p %q deploy/compose.yaml\n' "$backup/compose.yaml" >> "$backup/rollback.sh"
+if [[ -f "$backup/ca-certificates.crt" ]]; then
+  printf 'cp -p %q deploy/env/judge-tls/ca-certificates.crt\n' "$backup/ca-certificates.crt" >> "$backup/rollback.sh"
+else
+  printf 'rm -f deploy/env/judge-tls/ca-certificates.crt\n' >> "$backup/rollback.sh"
+fi
 if [[ -f "$backup/source-object_urls.py" ]]; then
   printf 'cp -p %q app/object_urls.py\n' "$backup/source-object_urls.py" >> "$backup/rollback.sh"
 else
@@ -106,11 +133,24 @@ printf 'docker tag %q %q\ndocker compose -f deploy/compose.yaml up -d --no-build
 chmod 700 "$backup/rollback.sh"
 trap 'echo "전환 실패: 이전 설정/이미지로 복구합니다." >&2; bash "$backup/rollback.sh"; exit 1' ERR
 
-python3 - <<'PY'
+# Persist trust outside the image so later full image rebuilds keep working.
+mkdir -p deploy/env/judge-tls
+docker run --rm --entrypoint cat "$new_image" /etc/ssl/certs/ca-certificates.crt > deploy/env/judge-tls/ca-certificates.crt
+chmod 644 deploy/env/judge-tls/ca-certificates.crt
+python3 - "$api_base" <<'PY'
 from pathlib import Path
+import sys
+compose = Path("deploy/compose.yaml")
+text = compose.read_text()
+mount = "      - ./env/judge-tls:/etc/zoj-tls:ro\n"
+if mount not in text:
+    if text.count("    volumes:\n") != 1:
+        raise SystemExit("지원하지 않는 Compose 설정입니다.")
+    compose.write_text(text.replace("    volumes:\n", "    volumes:\n" + mount, 1))
 path = Path("deploy/env/judge-agent.env")
 values = {
-    "INTERNAL_API_BASE_URL": "http://10.10.10.110:6001/api",
+    "INTERNAL_API_BASE_URL": sys.argv[1],
+    "SSL_CERT_FILE": "/etc/zoj-tls/ca-certificates.crt",
     "JUDGE_OBJECT_URL_ORIGINS": "https://zoj.kr,http://zoj.kr,https://judge.zerone01.kr,http://judge.zerone01.kr",
 }
 lines = [line for line in path.read_text().splitlines() if line.split("=", 1)[0].strip() not in values]
@@ -131,12 +171,14 @@ for attempt in {1..60}; do
   sleep 2
 done
 test "$registered" = true
-docker exec "$cid" python -c '
+docker exec -e ZOJ_RECOVERY_API="$api_base" "$cid" python -c '
 import json, os, urllib.request
+from urllib.parse import urlsplit
 from app.settings import settings
 from app.object_urls import resolve_object_url
-assert settings.internal_api_base_url == "http://10.10.10.110:6001/api"
-assert resolve_object_url("https://zoj.kr/minio/b/file?sig=abc", settings.internal_api_base_url, os.environ["JUDGE_OBJECT_URL_ORIGINS"]) == "http://10.10.10.110:6001/minio/b/file?sig=abc"
+assert settings.internal_api_base_url == os.environ["ZOJ_RECOVERY_API"]
+parts = urlsplit(settings.internal_api_base_url)
+assert resolve_object_url("https://zoj.kr/minio/b/file?sig=abc", settings.internal_api_base_url, os.environ["JUDGE_OBJECT_URL_ORIGINS"]) == f"{parts.scheme}://{parts.netloc}/minio/b/file?sig=abc"
 with urllib.request.urlopen(settings.internal_api_base_url + "/health", timeout=10) as r:
     assert json.load(r)["data"]["status"] == "ok"
 print("내부 API 설정 및 채점 파일 URL 전환 확인 완료")
@@ -150,7 +192,7 @@ for n in "${nodes[@]}"; do
   user="zoj-a$n"
   host="10.10.10.11$n"
   printf '\n[%s] 내부 주소 전환 시작\n' "$user"
-  printf -v remote_command 'sudo -S -p "" bash -c %q -- %q' "$remote_script" "/home/$user/judge-agent-v1"
+  printf -v remote_command 'sudo -S -p "" bash -c %q -- %q %q %q' "$remote_script" "/home/$user/judge-agent-v1" "$api_base" "$tls_cert_b64"
   if ! printf '%s\n' "$SSHPASS" | sshpass -e ssh \
     -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 -o ServerAliveInterval=15 \
     "$user@$host" "$remote_command"; then

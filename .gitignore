@@ -19,9 +19,9 @@ htmlcov/
 
 # Local runtime env
 deploy/env/judge-agent.env
+deploy/env/judge-tls/
 
 # OS / editor noise
 .DS_Store
 .idea/
 .vscode/
-

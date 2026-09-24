@@ -22,3 +22,10 @@ def test_relative_download_uses_internal_api_origin():
     assert resolve_object_url("/api/storage/file?signature=abc", BASE) == (
         "http://10.10.10.110:6001/api/storage/file?signature=abc"
     )
+
+
+def test_https_internal_download_keeps_tls_and_signed_query():
+    url = "https://zoj.kr/minio/zerone/file?X-Amz-Signature=a%2Fb"
+    assert resolve_object_url(url, "https://10.10.10.110:6443/api", "https://zoj.kr") == (
+        "https://10.10.10.110:6443/minio/zerone/file?X-Amz-Signature=a%2Fb"
+    )
