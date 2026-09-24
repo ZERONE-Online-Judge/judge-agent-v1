@@ -9,6 +9,7 @@ import itertools
 import json
 import os
 import signal
+import stat
 import shutil
 import subprocess
 import tempfile
@@ -190,7 +191,7 @@ class JudgeExecutor:
 
     def _compile(self, job_dir: Path, filename: str, source_code: str, compile_command: list[str], run_command: list[str]) -> list[str] | ExecutionResult:
         (job_dir / filename).write_text(source_code, encoding="utf-8")
-        compiled = self._run_command(compile_command, job_dir, timeout_seconds=20, sandbox_mode_override="local")
+        compiled = self._run_compiler(compile_command, job_dir)
 
         if compiled.returncode != 0:
             return ExecutionResult(
@@ -201,7 +202,7 @@ class JudgeExecutor:
 
     def _prepare_java(self, job_dir: Path, source_code: str) -> list[str] | ExecutionResult:
         (job_dir / "Main.java").write_text(source_code, encoding="utf-8")
-        compiled = self._run_command(
+        compiled = self._run_compiler(
             [
                 "/usr/bin/javac",
                 "-J-Xmx96m",
@@ -215,8 +216,6 @@ class JudgeExecutor:
                 "Main.java",
             ],
             job_dir,
-            timeout_seconds=20,
-            sandbox_mode_override="local",
         )
         if compiled.returncode != 0:
             return ExecutionResult(
@@ -224,6 +223,17 @@ class JudgeExecutor:
                 message=compiled.stderr[-4000:] or compiled.stdout[-4000:],
             )
         return ["/usr/bin/java", "-cp", str(job_dir), "Main"]
+
+    def _run_compiler(self, command: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        # Compiler input is untrusted too (e.g. absolute #include / .incbin).
+        # Only this compilation directory is writable inside the sandbox.
+        original_mode = stat.S_IMODE(cwd.stat().st_mode)
+        if self.sandbox_mode == "isolate":
+            cwd.chmod(original_mode | 0o777)
+        try:
+            return self._run_command(command, cwd, timeout_seconds=20)
+        finally:
+            cwd.chmod(original_mode)
 
     def _run_final(self, command: list[str], job_dir: Path, job: dict) -> ExecutionResult:
         completed = self._run_command(
@@ -362,14 +372,24 @@ class JudgeExecutor:
             expected_text = testcase.get("output_text") if isinstance(testcase.get("output_text"), str) else self._read_object(testcase.get("output_url"), testcase["output_storage_key"])
             print(f"[judge-agent] job={job_id} testcase={order} stage=read-output:done elapsed={time.monotonic() - started_at:.3f}s", flush=True)
             normalized_input = self._normalize_input_text(input_text)
+            case_command = command
+            if self.sandbox_mode == "isolate":
+                # Do not expose sibling cases or checker answer files to submissions.
+                for artifact in job_dir.iterdir():
+                    if artifact.is_file() and not artifact.is_symlink():
+                        shutil.copy2(artifact, case_dir / artifact.name)
+                prefix = str(job_dir) + "/"
+                case_command = [str(case_dir) if part == str(job_dir)
+                                else str(case_dir / part[len(prefix):]) if part.startswith(prefix)
+                                else part for part in command]
             print(f"[judge-agent] job={job_id} testcase={order} stage=run:start", flush=True)
             completed = self._run_command(
-                command,
+                case_command,
                 case_dir,
                 timeout_seconds=self._testcase_time_limit_seconds(job, testcase),
                 stdin=normalized_input,
                 sandbox_container_id=sandbox_container_id,
-                sandbox_mount_root=job_dir if self.sandbox_mode == "isolate" else None,
+                sandbox_mount_root=case_dir if self.sandbox_mode == "isolate" else None,
                 memory_limit_mb=self._testcase_memory_limit_mb(job, testcase),
             )
             print(
@@ -544,12 +564,7 @@ class JudgeExecutor:
                 message=f"unsupported checker file: {filename}",
             )
 
-        compiled = self._run_command(
-            compile_cmd,
-            cache_dir,
-            timeout_seconds=20,
-            sandbox_mode_override="local"
-        )
+        compiled = self._run_compiler(compile_cmd, cache_dir)
         if compiled.returncode != 0:
             return ExecutionResult(
                 status="system_error",
@@ -823,7 +838,8 @@ class JudgeExecutor:
         cwd.mkdir(parents=True, exist_ok=True)
         mount_root.mkdir(parents=True, exist_ok=True)
         box_id = self._next_isolate_box_id()
-        meta_path = cwd / f".isolate-meta-{box_id}.txt"
+        meta_dir = tempfile.TemporaryDirectory(prefix="zoj-isolate-meta-")
+        meta_path = Path(meta_dir.name) / "meta.txt"
         stdin_file = tempfile.TemporaryFile()
         stdout_file = tempfile.TemporaryFile()
         stderr_file = tempfile.TemporaryFile()
@@ -919,7 +935,7 @@ class JudgeExecutor:
             stdin_file.close()
             stdout_file.close()
             stderr_file.close()
-            meta_path.unlink(missing_ok=True)
+            meta_dir.cleanup()
 
     def _next_isolate_box_id(self) -> int:
         count = max(1, settings.isolate_box_id_count)
@@ -1032,7 +1048,7 @@ class JudgeExecutor:
             Path("/lib64"),
             Path("/usr"),
         ]
-        if executable == "java":
+        if executable in {"java", "javac"}:
             paths.extend(
                 [
                     Path("/etc/alternatives"),

@@ -5,8 +5,10 @@ set -euo pipefail
 command -v sshpass >/dev/null || { echo 'sshpass가 필요합니다.' >&2; exit 1; }
 api_base=${ZOJ_INTERNAL_API_BASE_URL:-https://10.10.10.110:6443/api}
 tls_cert_b64=${ZOJ_INTERNAL_TLS_CERT_B64:-}
+executor_b64=${ZOJ_SECURE_EXECUTOR_B64:-}
+smoke_b64=${ZOJ_SECURITY_SMOKE_B64:-}
 case "$api_base" in
-  https://10.10.10.110:6443/api) test -n "$tls_cert_b64" || { echo '인증서가 포함된 use-internal-tls.sh로 실행하세요.' >&2; exit 1; } ;;
+  https://10.10.10.110:6443/api) test -n "$tls_cert_b64" && test -n "$executor_b64" && test -n "$smoke_b64" || { echo '인증서가 포함된 use-internal-tls.sh로 실행하세요.' >&2; exit 1; } ;;
   http://10.10.10.110:6001/api) ;;
   *) echo '지원하지 않는 내부 API 주소입니다.' >&2; exit 1 ;;
 esac
@@ -25,6 +27,8 @@ set -euo pipefail
 cd "$1"
 api_base=$2
 tls_cert_b64=$3
+executor_b64=$4
+smoke_b64=$5
 compose=(docker compose -f deploy/compose.yaml)
 cid=$("${compose[@]}" ps -q judge-agent)
 test -n "$cid" || { echo '실행 중인 judge-agent를 찾지 못했습니다.' >&2; exit 1; }
@@ -48,8 +52,11 @@ cp -p deploy/env/judge-agent.env "$backup/judge-agent.env"
 cp -p deploy/compose.yaml "$backup/compose.yaml"
 if [[ -f deploy/env/judge-tls/ca-certificates.crt ]]; then cp -p deploy/env/judge-tls/ca-certificates.crt "$backup/ca-certificates.crt"; fi
 cp -p app/executor.py "$backup/source-executor.py"
+cp -p app/settings.py "$backup/source-settings.py"
+if [[ -f app/security_smoke.py ]]; then cp -p app/security_smoke.py "$backup/source-security_smoke.py"; fi
 if [[ -f app/object_urls.py ]]; then cp -p app/object_urls.py "$backup/source-object_urls.py"; fi
 docker cp "$cid:/app/app/executor.py" "$backup/context/executor.py"
+docker cp "$cid:/app/app/settings.py" "$backup/context/settings.py"
 image_tag=$(docker inspect --format '{{.Config.Image}}' "$cid")
 image_id=$(docker inspect --format '{{.Image}}' "$cid")
 [[ "$image_tag" != sha256:* ]] || { echo '태그 없는 이미지는 자동 전환하지 않습니다.' >&2; exit 1; }
@@ -99,7 +106,42 @@ for src, dst in [(backup / "context/executor.py", backup / "context/executor.py"
     dst.write_text(text)
 PY
 
+if [[ -n "$executor_b64" ]]; then
+  # Replace only known runtime revisions, never silently overwrite custom code.
+  python3 - "$backup" "$executor_b64" "$smoke_b64" <<'PY'
+from pathlib import Path
+import ast, base64, hashlib, sys
+backup = Path(sys.argv[1])
+secure = base64.b64decode(sys.argv[2], validate=True)
+smoke = base64.b64decode(sys.argv[3], validate=True)
+ast.parse(secure)
+ast.parse(smoke)
+approved = {
+    "61ff2bbf85b23a80f766a2c85eea3af9c004441cc83fd388baa9c24ab0d0b5e9",
+    "e4dc12a3091efe523bfbbc432b6753f9fc4afda9ac70eb2b52f3cdb1ad78ae47",
+    hashlib.sha256(secure).hexdigest(),
+}
+for path in (backup / "context/executor.py", backup / "patched-source-executor.py"):
+    if hashlib.sha256(path.read_bytes()).hexdigest() not in approved:
+        raise SystemExit("알 수 없는 executor 수정본입니다. 변경 없이 중단합니다.")
+    path.write_bytes(secure)
+(backup / "context/security_smoke.py").write_bytes(smoke)
+for src, dst in [(backup / "context/settings.py", backup / "context/settings.py"),
+                 (Path("app/settings.py"), backup / "patched-source-settings.py")]:
+    text = src.read_text()
+    old_version = 'agent_version: str = "0.2.16"'
+    new_version = 'agent_version: str = "0.2.17"'
+    if old_version not in text and new_version not in text:
+        raise SystemExit("지원하지 않는 에이전트 버전입니다.")
+    dst.write_text(text.replace(old_version, new_version, 1))
+PY
+  docker exec "$cid" python -c 'from app.settings import settings; assert settings.isolate_box_id_base >= 32, "Security smoke requires box IDs 0..31 to be reserved"'
+fi
+
 printf 'FROM %s\nCOPY executor.py /app/app/executor.py\nCOPY object_urls.py /app/app/object_urls.py\n' "$saved_image" > "$backup/context/Dockerfile"
+if [[ -n "$executor_b64" ]]; then
+  printf 'COPY security_smoke.py /app/app/security_smoke.py\nCOPY settings.py /app/app/settings.py\n' >> "$backup/context/Dockerfile"
+fi
 new_image="zerone-judge-agent:internal-$stamp"
 if [[ -n "$tls_cert_b64" ]]; then
   python3 - "$tls_cert_b64" "$backup/context/judge-ca.crt" <<'PY'
@@ -119,10 +161,16 @@ assert resolve_object_url("https://zoj.kr/minio/b/a%20b?sig=a%2Fb", "http://10.1
 printf '#!/usr/bin/env bash\nset -euo pipefail\ncd %q\n' "$PWD" > "$backup/rollback.sh"
 printf 'cp -p %q deploy/env/judge-agent.env\ncp -p %q app/executor.py\n' "$backup/judge-agent.env" "$backup/source-executor.py" >> "$backup/rollback.sh"
 printf 'cp -p %q deploy/compose.yaml\n' "$backup/compose.yaml" >> "$backup/rollback.sh"
+printf 'cp -p %q app/settings.py\n' "$backup/source-settings.py" >> "$backup/rollback.sh"
 if [[ -f "$backup/ca-certificates.crt" ]]; then
   printf 'cp -p %q deploy/env/judge-tls/ca-certificates.crt\n' "$backup/ca-certificates.crt" >> "$backup/rollback.sh"
 else
   printf 'rm -f deploy/env/judge-tls/ca-certificates.crt\n' >> "$backup/rollback.sh"
+fi
+if [[ -f "$backup/source-security_smoke.py" ]]; then
+  printf 'cp -p %q app/security_smoke.py\n' "$backup/source-security_smoke.py" >> "$backup/rollback.sh"
+else
+  printf 'rm -f app/security_smoke.py\n' >> "$backup/rollback.sh"
 fi
 if [[ -f "$backup/source-object_urls.py" ]]; then
   printf 'cp -p %q app/object_urls.py\n' "$backup/source-object_urls.py" >> "$backup/rollback.sh"
@@ -157,9 +205,17 @@ lines = [line for line in path.read_text().splitlines() if line.split("=", 1)[0]
 lines += [f"{key}={value}" for key, value in values.items()]
 path.write_text("\n".join(lines) + "\n")
 PY
+chmod 600 deploy/env/judge-agent.env
 cp "$backup/patched-source-executor.py" app/executor.py
 cp "$backup/context/object_urls.py" app/object_urls.py
+if [[ -n "$executor_b64" ]]; then
+  cp "$backup/context/security_smoke.py" app/security_smoke.py
+  cp "$backup/patched-source-settings.py" app/settings.py
+fi
 docker tag "$new_image" "$image_tag"
+if [[ -n "$executor_b64" ]]; then
+  "${compose[@]}" run --rm --no-deps -e JUDGE_ISOLATE_BOX_ID_BASE=0 -e JUDGE_ISOLATE_BOX_ID_COUNT=32 --entrypoint python judge-agent -m app.security_smoke
+fi
 "${compose[@]}" up -d --no-build --force-recreate judge-agent
 cid=$("${compose[@]}" ps -q judge-agent)
 registered=false
@@ -192,7 +248,7 @@ for n in "${nodes[@]}"; do
   user="zoj-a$n"
   host="10.10.10.11$n"
   printf '\n[%s] 내부 주소 전환 시작\n' "$user"
-  printf -v remote_command 'sudo -S -p "" bash -c %q -- %q %q %q' "$remote_script" "/home/$user/judge-agent-v1" "$api_base" "$tls_cert_b64"
+  printf -v remote_command 'sudo -S -p "" bash -c %q -- %q %q %q %q %q' "$remote_script" "/home/$user/judge-agent-v1" "$api_base" "$tls_cert_b64" "$executor_b64" "$smoke_b64"
   if ! printf '%s\n' "$SSHPASS" | sshpass -e ssh \
     -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 -o ServerAliveInterval=15 \
     "$user@$host" "$remote_command"; then
