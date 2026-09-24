@@ -9,7 +9,7 @@ executor_b64=${ZOJ_SECURE_EXECUTOR_B64:-}
 smoke_b64=${ZOJ_SECURITY_SMOKE_B64:-}
 case "$api_base" in
   https://10.10.10.110:6443/api) test -n "$tls_cert_b64" && test -n "$executor_b64" && test -n "$smoke_b64" || { echo '인증서가 포함된 use-internal-tls.sh로 실행하세요.' >&2; exit 1; } ;;
-  http://10.10.10.110:6001/api) ;;
+  http://10.10.10.110:6001/api) echo 'HTTP 채점기 인증은 종료됐습니다. use-internal-tls.sh를 사용하세요.' >&2; exit 1 ;;
   *) echo '지원하지 않는 내부 API 주소입니다.' >&2; exit 1 ;;
 esac
 nodes=("$@")
