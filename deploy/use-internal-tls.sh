@@ -3,8 +3,8 @@
 set -euo pipefail
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
-curl -fSL --connect-timeout 10 --max-time 60 https://raw.githubusercontent.com/ZERONE-Online-Judge/judge-agent-v1/f30b96cd7c30e3d0fc1c24288db1496d9155560f/deploy/use-internal-api.sh -o "$scratch/use-internal-api.sh"
-printf '%s  %s\n' '9896b4017705b353daab540bd30858d88334ab1a25836e86696ed8cfadfbc304' "$scratch/use-internal-api.sh" | sha256sum -c -
+curl -fSL --connect-timeout 10 --max-time 60 https://raw.githubusercontent.com/ZERONE-Online-Judge/judge-agent-v1/1f279fbea5e5fc444dd3928b8fc1741d99ff9fdc/deploy/use-internal-api.sh -o "$scratch/use-internal-api.sh"
+printf '%s  %s\n' '7077693d38438808886532caa5a606109c33f3e8b564017cd159a4347d6f4720' "$scratch/use-internal-api.sh" | sha256sum -c -
 curl -fSL --connect-timeout 10 --max-time 60 https://raw.githubusercontent.com/ZERONE-Online-Judge/judge-agent-v1/f30b96cd7c30e3d0fc1c24288db1496d9155560f/app/executor.py -o "$scratch/executor.py"
 printf '%s  %s\n' 'c2ee511493e53812cc77bc337bd9be263d84e96e546eb7a70d09f5008ff7b299' "$scratch/executor.py" | sha256sum -c -
 curl -fSL --connect-timeout 10 --max-time 60 https://raw.githubusercontent.com/ZERONE-Online-Judge/judge-agent-v1/f30b96cd7c30e3d0fc1c24288db1496d9155560f/app/security_smoke.py -o "$scratch/security_smoke.py"
