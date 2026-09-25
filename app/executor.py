@@ -5,6 +5,7 @@ from pathlib import Path
 import base64
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import gzip
+import fcntl
 import itertools
 import json
 import os
@@ -77,7 +78,7 @@ class JudgeExecutor:
         self.checker_sandbox_mode = checker_sandbox_mode or sandbox_mode or settings.checker_sandbox_mode
         self.output_limit_bytes = output_limit_bytes or settings.output_limit_bytes
         self.testcase_parallelism = max(1, testcase_parallelism or settings.testcase_parallelism)
-        self.checker_cache_root = self.work_root / "checker-cache"
+        self.checker_cache_root = self.work_root / "checker-cache" / "v2"
         self.work_root.mkdir(parents=True, exist_ok=True)
         self.checker_cache_root.mkdir(parents=True, exist_ok=True)
 
@@ -546,36 +547,36 @@ class JudgeExecutor:
         cache_key = digest.hexdigest()
         cache_dir = self.checker_cache_root / cache_key
         binary_path = cache_dir / "checker"
-        if binary_path.exists():
-            return binary_path
-
         cache_dir.mkdir(parents=True, exist_ok=True)
-        (cache_dir / filename).write_bytes(checker_bytes)
-        for resource_name, resource_bytes in resource_blobs:
-            (cache_dir / resource_name).write_bytes(resource_bytes)
-
-        if suffix in {".cpp", ".cc", ".cxx"}:
-            compile_cmd = ["/usr/bin/g++", "-B/usr/bin", "-std=c++17", "-O2", filename, "-o", "checker"]
-        elif suffix == ".c":
-            compile_cmd = ["/usr/bin/gcc", "-B/usr/bin", "-std=c99", "-O2", filename, "-o", "checker"]
-        else:
-            return ExecutionResult(
-                status="system_error",
-                message=f"unsupported checker file: {filename}",
-            )
-
-        compiled = self._run_compiler(compile_cmd, cache_dir)
-        if compiled.returncode != 0:
-            return ExecutionResult(
-                status="system_error",
-                message="checker compile failed: " + (compiled.stderr or compiled.stdout)[-4000:],
-            )
-        if not binary_path.exists():
-            return ExecutionResult(
-                status="system_error",
-                message="checker compile failed: checker binary missing",
-            )
-        return binary_path
+        # Separate jobs, threads, and agent processes can share this cache.
+        # Never link into a published path: isolate uses a different UID per box.
+        with (cache_dir / ".compile.lock").open("a+b") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            if binary_path.is_file():
+                return binary_path
+            with tempfile.TemporaryDirectory(prefix=".build-", dir=cache_dir) as temporary:
+                build_dir = Path(temporary)
+                (build_dir / filename).write_bytes(checker_bytes)
+                for resource_name, resource_bytes in resource_blobs:
+                    (build_dir / resource_name).write_bytes(resource_bytes)
+                if suffix in {".cpp", ".cc", ".cxx"}:
+                    compile_cmd = ["/usr/bin/g++", "-B/usr/bin", "-std=c++17", "-O2", filename, "-o", "checker"]
+                elif suffix == ".c":
+                    compile_cmd = ["/usr/bin/gcc", "-B/usr/bin", "-std=c99", "-O2", filename, "-o", "checker"]
+                else:
+                    return ExecutionResult(status="system_error", message=f"unsupported checker file: {filename}")
+                compiled = self._run_compiler(compile_cmd, build_dir)
+                if compiled.returncode != 0:
+                    return ExecutionResult(
+                        status="system_error",
+                        message="checker compile failed: " + (compiled.stderr or compiled.stdout)[-4000:],
+                    )
+                built = build_dir / "checker"
+                if not built.exists() or not stat.S_ISREG(built.lstat().st_mode):
+                    return ExecutionResult(status="system_error", message="checker compile failed: checker binary missing")
+                built.chmod(0o755)
+                os.replace(built, binary_path)
+                return binary_path
 
     def _run_checker(
         self,

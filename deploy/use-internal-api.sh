@@ -118,6 +118,7 @@ ast.parse(secure)
 ast.parse(smoke)
 approved = {
     "61ff2bbf85b23a80f766a2c85eea3af9c004441cc83fd388baa9c24ab0d0b5e9",
+    "c2ee511493e53812cc77bc337bd9be263d84e96e546eb7a70d09f5008ff7b299",
     "e4dc12a3091efe523bfbbc432b6753f9fc4afda9ac70eb2b52f3cdb1ad78ae47",
     hashlib.sha256(secure).hexdigest(),
 }
@@ -129,11 +130,11 @@ for path in (backup / "context/executor.py", backup / "patched-source-executor.p
 for src, dst in [(backup / "context/settings.py", backup / "context/settings.py"),
                  (Path("app/settings.py"), backup / "patched-source-settings.py")]:
     text = src.read_text()
-    old_version = 'agent_version: str = "0.2.16"'
-    new_version = 'agent_version: str = "0.2.17"'
-    if old_version not in text and new_version not in text:
+    supported = ['agent_version: str = "0.2.16"', 'agent_version: str = "0.2.17"', 'agent_version: str = "0.2.18"']
+    matched = [version for version in supported if version in text]
+    if len(matched) != 1:
         raise SystemExit("지원하지 않는 에이전트 버전입니다.")
-    dst.write_text(text.replace(old_version, new_version, 1))
+    dst.write_text(text.replace(matched[0], 'agent_version: str = "0.2.18"', 1))
 PY
   docker exec "$cid" python -c 'from app.settings import settings; assert settings.isolate_box_id_base >= 32, "Security smoke requires box IDs 0..31 to be reserved"'
 fi
