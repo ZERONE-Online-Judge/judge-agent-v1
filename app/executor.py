@@ -329,8 +329,6 @@ class JudgeExecutor:
                 for future in as_completed(futures):
                     result = future.result()
                     batch_results.append(result)
-                    max_runtime_ms = self._max_metric(max_runtime_ms, result.result.runtime_ms)
-                    max_memory_kb = self._max_metric(max_memory_kb, result.result.memory_kb)
                     completed_count += 1
                     if progress:
                         progress("judging", completed_count, total)
@@ -340,7 +338,38 @@ class JudgeExecutor:
                         flush=True,
                     )
 
+                testcases_by_order = {int(testcase["display_order"]): testcase for testcase in batch}
+                confirmed_results: list[TestcaseRunResult] = []
                 for result in sorted(batch_results, key=lambda item: item.order):
+                    if result.result.status == "time_limit_exceeded":
+                        testcase = testcases_by_order[result.order]
+                        print(
+                            f"[judge-agent] job={job_id} testcase={result.order} "
+                            "stage=tle-confirmation:start mode=serial",
+                            flush=True,
+                        )
+                        case_dir = job_dir / "cases" / f"{result.order:03d}"
+                        self._remove_tree(case_dir)
+                        result = self._run_single_testcase(
+                            command,
+                            job_dir,
+                            job,
+                            testcase,
+                            checker,
+                            source_hash,
+                            sandbox_container_id,
+                        )
+                        print(
+                            f"[judge-agent] job={job_id} testcase={result.order} "
+                            f"stage=tle-confirmation:done status={result.result.status} "
+                            f"runtime_ms={result.result.runtime_ms}",
+                            flush=True,
+                        )
+                    confirmed_results.append(result)
+
+                for result in confirmed_results:
+                    max_runtime_ms = self._max_metric(max_runtime_ms, result.result.runtime_ms)
+                    max_memory_kb = self._max_metric(max_memory_kb, result.result.memory_kb)
                     if result.result.status != "accepted":
                         return self._execution_result(
                             result.result.status,
@@ -860,13 +889,14 @@ class JudgeExecutor:
                 return subprocess.CompletedProcess(command, init.returncode, init.stdout, init.stderr)
 
             effective_command = self._command_with_runtime_limits(command, memory_limit_mb)
+            wall_time_seconds = self._isolate_wall_time_seconds(timeout_seconds)
             run_command = [
                 "/usr/bin/isolate",
                 "--cg",
                 f"--box-id={box_id}",
                 f"--meta={meta_path}",
                 f"--time={timeout_seconds}",
-                f"--wall-time={self._isolate_wall_time_seconds(timeout_seconds)}",
+                f"--wall-time={wall_time_seconds}",
                 "--extra-time=0",
                 f"--cg-mem={memory_limit_mb * 1024}",
                 f"--fsize={max(1, self.output_limit_bytes // 1024)}",
@@ -885,7 +915,7 @@ class JudgeExecutor:
                 stdin=stdin_file,
                 stdout=stdout_file,
                 stderr=stderr_file,
-                timeout=timeout_seconds + 5,
+                timeout=wall_time_seconds + 5,
                 check=False,
             )
             meta = self._read_isolate_meta(meta_path)
@@ -909,6 +939,7 @@ class JudgeExecutor:
                 started_at,
                 memory_kb=self._isolate_memory_kb(meta),
                 fallback_stderr=self._isolate_message(meta, returncode),
+                measured_runtime_ms=self._isolate_runtime_ms(meta),
             )
             return completed
         except FileNotFoundError as error:
@@ -972,8 +1003,11 @@ class JudgeExecutor:
             return 127
 
     def _isolate_runtime_ms(self, meta: dict[str, str]) -> int | None:
+        value = meta.get("time")
+        if value is None:
+            return None
         try:
-            return max(0, int(float(meta.get("time") or "0") * 1000))
+            return max(0, int(float(value) * 1000))
         except ValueError:
             return None
 
@@ -991,7 +1025,9 @@ class JudgeExecutor:
         return meta.get("message", "")
 
     def _isolate_wall_time_seconds(self, timeout_seconds: float) -> float:
-        return max(timeout_seconds, 0.1)
+        # CPU time is the official limit. Wall time is only a deadlock/sleep guard,
+        # so leave room for scheduler contention while parallel cases are running.
+        return max(timeout_seconds * 3, timeout_seconds + 2, 0.1)
 
     def _is_memory_limit_result(
         self,
@@ -1103,12 +1139,14 @@ class JudgeExecutor:
         memory_kb: int | None = None,
         baseline_child_rss_kb: int | None = None,
         fallback_stderr: str = "",
+        measured_runtime_ms: int | None = None,
     ) -> subprocess.CompletedProcess[str]:
         stdout = self._read_limited_text(stdout_file)
         stderr = self._read_limited_text(stderr_file) or fallback_stderr
         completed = subprocess.CompletedProcess(command, returncode, stdout, stderr)
         wall_runtime_ms = max(0, int((time.monotonic() - started_at) * 1000)) if started_at is not None else None
-        completed.runtime_ms = wall_runtime_ms
+        completed.runtime_ms = measured_runtime_ms if measured_runtime_ms is not None else wall_runtime_ms
+        completed.wall_runtime_ms = wall_runtime_ms
         fallback_memory_kb = self._children_maxrss_kb()
         if baseline_child_rss_kb is not None and fallback_memory_kb is not None and fallback_memory_kb <= baseline_child_rss_kb:
             fallback_memory_kb = None

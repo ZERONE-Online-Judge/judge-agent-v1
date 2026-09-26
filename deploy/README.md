@@ -92,9 +92,16 @@ cp env/judge-agent.env.example env/judge-agent.env
 성능 튜닝:
 
 - `JUDGE_TOTAL_SLOTS`: 동시에 처리할 제출 job 수
-- `JUDGE_TESTCASE_PARALLELISM`: 제출 1개 안에서 동시에 실행할 테스트케이스 수. 기본값 `1`
+- `JUDGE_TESTCASE_PARALLELISM`: 제출 1개 안에서 동시에 실행할 테스트케이스 수. 기본값 `4`
 
-동시 실행량은 대략 `JUDGE_TOTAL_SLOTS * JUDGE_TESTCASE_PARALLELISM`입니다. 10 vCPU / 20GB VM에서는 먼저 `JUDGE_TOTAL_SLOTS=4`, `JUDGE_TESTCASE_PARALLELISM=2` 정도로 시작하는 것을 권장합니다.
+동시 실행량은 대략 `JUDGE_TOTAL_SLOTS * JUDGE_TESTCASE_PARALLELISM`입니다. 현재 10 vCPU 채점 VM은 긴 테스트 묶음의 지연 시간과 실행 안정성을 함께 고려해 `JUDGE_TOTAL_SLOTS=1`, `JUDGE_TESTCASE_PARALLELISM=4`를 사용합니다.
+
+0.2.20부터 isolate가 기록한 CPU 시간을 공식 실행 시간으로 사용합니다. wall-time은
+CPU 제한의 3배 또는 CPU 제한에 2초를 더한 값 중 큰 값으로 두어 병렬 실행의
+스케줄러 대기를 TLE로 오인하지 않습니다. 병렬 실행에서 TLE가 나온 테스트는 다른
+테스트가 모두 끝난 뒤 깨끗한 작업 디렉터리에서 단독 재실행하며, 단독 실행에서도
+시간 제한을 넘을 때만 최종 TLE로 처리합니다. 테스트 수가 많은 문제의 4병렬 처리량은
+유지하면서 부하에 따른 거짓 TLE 가능성을 줄이는 정책입니다.
 
 또는 긴 명령 없이, 파일 안 설정값만 바꾸는 부트스트랩 스크립트를 사용하세요.
 

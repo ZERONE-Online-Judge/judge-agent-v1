@@ -2,7 +2,7 @@ from pathlib import Path
 import subprocess
 import time
 
-from app.executor import JudgeExecutor
+from app.executor import ExecutionResult, JudgeExecutor, TestcaseRunResult as _TestcaseRunResult
 
 
 def test_python_submission_accepts(tmp_path: Path):
@@ -281,6 +281,67 @@ def test_parallel_testcases_return_first_failing_display_order(tmp_path: Path):
     assert result.failed_testcase_order == 2
 
 
+def test_parallel_tle_is_retried_serially_and_can_be_accepted(tmp_path: Path, monkeypatch):
+    executor = JudgeExecutor(tmp_path, sandbox_mode="isolate", testcase_parallelism=3)
+    calls: dict[int, int] = {}
+
+    monkeypatch.setattr(executor, "_prepare_checker", lambda *_: None)
+
+    def fake_run(command, job_dir, job, testcase, checker, source_hash, sandbox_container_id):
+        order = int(testcase["display_order"])
+        calls[order] = calls.get(order, 0) + 1
+        if order == 2 and calls[order] == 1:
+            return _TestcaseRunResult(
+                order,
+                ExecutionResult("time_limit_exceeded", failed_testcase_order=order, runtime_ms=1000),
+            )
+        return _TestcaseRunResult(order, ExecutionResult("accepted", runtime_ms=order * 10))
+
+    monkeypatch.setattr(executor, "_run_single_testcase", fake_run)
+    result = executor._run_testcases(
+        ["program"],
+        tmp_path / "job",
+        {"judge_job_id": "job-confirm-tle"},
+        [{"display_order": order} for order in (1, 2, 3)],
+        "source-hash",
+    )
+
+    assert result.status == "accepted"
+    assert result.runtime_ms == 30
+    assert calls == {1: 1, 2: 2, 3: 1}
+
+
+def test_parallel_tle_is_final_only_after_serial_confirmation(tmp_path: Path, monkeypatch):
+    executor = JudgeExecutor(tmp_path, sandbox_mode="isolate", testcase_parallelism=2)
+    calls: dict[int, int] = {}
+
+    monkeypatch.setattr(executor, "_prepare_checker", lambda *_: None)
+
+    def fake_run(command, job_dir, job, testcase, checker, source_hash, sandbox_container_id):
+        order = int(testcase["display_order"])
+        calls[order] = calls.get(order, 0) + 1
+        if order == 2:
+            return _TestcaseRunResult(
+                order,
+                ExecutionResult("time_limit_exceeded", failed_testcase_order=order, runtime_ms=900),
+            )
+        return _TestcaseRunResult(order, ExecutionResult("accepted", runtime_ms=10))
+
+    monkeypatch.setattr(executor, "_run_single_testcase", fake_run)
+    result = executor._run_testcases(
+        ["program"],
+        tmp_path / "job",
+        {"judge_job_id": "job-confirmed-tle"},
+        [{"display_order": order} for order in (1, 2)],
+        "source-hash",
+    )
+
+    assert result.status == "time_limit_exceeded"
+    assert result.failed_testcase_order == 2
+    assert result.runtime_ms == 900
+    assert calls == {1: 1, 2: 2}
+
+
 def test_testcase_accepts_with_custom_checker(tmp_path: Path):
     input_path = tmp_path / "input.txt"
     output_path = tmp_path / "output.txt"
@@ -361,15 +422,16 @@ def test_isolate_meta_parses_runtime_and_memory(tmp_path: Path):
     executor = JudgeExecutor(tmp_path, sandbox_mode="isolate")
 
     assert executor._isolate_runtime_ms({"time": "0.017"}) == 17
+    assert executor._isolate_runtime_ms({}) is None
     assert executor._isolate_memory_kb({"max-rss": "2048"}) == 2048
     assert executor._isolate_memory_kb({"cg-mem": "4096", "max-rss": "2048"}) == 4096
 
 
-def test_isolate_wall_time_matches_problem_limit(tmp_path: Path):
+def test_isolate_wall_time_allows_scheduler_contention(tmp_path: Path):
     executor = JudgeExecutor(tmp_path, sandbox_mode="isolate")
 
-    assert executor._isolate_wall_time_seconds(1.0) == 1.0
-    assert executor._isolate_wall_time_seconds(0.05) == 0.1
+    assert executor._isolate_wall_time_seconds(1.0) == 3.0
+    assert executor._isolate_wall_time_seconds(0.05) == 2.05
 
 
 def test_completed_process_reports_wall_runtime(tmp_path: Path):
@@ -390,6 +452,28 @@ def test_completed_process_reports_wall_runtime(tmp_path: Path):
 
     assert completed.runtime_ms is not None
     assert completed.runtime_ms >= 900
+    assert completed.wall_runtime_ms >= 900
+
+
+def test_completed_process_prefers_isolate_cpu_runtime(tmp_path: Path):
+    executor = JudgeExecutor(tmp_path, sandbox_mode="isolate")
+    stdout_path = tmp_path / "stdout.txt"
+    stderr_path = tmp_path / "stderr.txt"
+    stdout_path.write_text("", encoding="utf-8")
+    stderr_path.write_text("", encoding="utf-8")
+
+    with stdout_path.open("rb") as stdout_file, stderr_path.open("rb") as stderr_file:
+        completed = executor._completed_process(
+            ["busy"],
+            0,
+            stdout_file,
+            stderr_file,
+            started_at=time.monotonic() - 1.0,
+            measured_runtime_ms=123,
+        )
+
+    assert completed.runtime_ms == 123
+    assert completed.wall_runtime_ms >= 900
 
 
 def test_memory_limit_uses_problem_and_testcase_values(tmp_path: Path):

@@ -26,6 +26,7 @@ def test_compiler_failure_never_falls_back_to_host(tmp_path, monkeypatch):
 def test_metadata_is_outside_the_writable_sandbox(tmp_path, monkeypatch):
     executor = JudgeExecutor(tmp_path, sandbox_mode="isolate")
     metadata = []
+    run_timeouts = []
 
     def fake_isolate(command, **kwargs):
         for arg in command:
@@ -33,12 +34,17 @@ def test_metadata_is_outside_the_writable_sandbox(tmp_path, monkeypatch):
                 path = Path(arg.split("=", 1)[1])
                 assert not path.is_relative_to(tmp_path)
                 metadata.append(path)
-                path.write_text("status:OK\nexitcode:0\n")
+                path.write_text("status:OK\nexitcode:0\ntime:0.123\ntime-wall:0.900\n")
+                assert "--time=1" in command
+                assert "--wall-time=3" in command
+                run_timeouts.append(kwargs["timeout"])
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(subprocess, "run", fake_isolate)
     result = executor._run_command(["/usr/bin/true"], tmp_path, 1)
     assert result.returncode == 0
+    assert result.runtime_ms == 123
+    assert run_timeouts == [8]
     assert len(metadata) == 1
     assert not metadata[0].exists()
 
