@@ -587,7 +587,7 @@ def test_java_command_gets_conservative_heap_limit(tmp_path: Path):
     )
 
     assert command[1:7] == [
-        "-Xmx256m",
+        "-Xmx384m",
         "-Xss256k",
         "-XX:+UseSerialGC",
         "-XX:ReservedCodeCacheSize=32m",
@@ -612,10 +612,36 @@ def test_java_heap_scales_with_problem_memory(tmp_path: Path):
     executor = JudgeExecutor(tmp_path, sandbox_mode="isolate")
 
     assert executor._java_heap_mb(128) == 64
-    assert executor._java_heap_mb(256) == 128
-    assert executor._java_heap_mb(512) == 256
-    assert executor._java_heap_mb(1024) == 512
-    assert executor._java_heap_mb(2048) == 512
+    assert executor._java_heap_mb(256) == 192
+    assert executor._java_heap_mb(512) == 384
+    assert executor._java_heap_mb(1024) == 768
+    assert executor._java_heap_mb(2048) == 1536
+
+
+def test_java_heap_has_no_boundary_jumps_and_keeps_native_headroom(tmp_path: Path):
+    executor = JudgeExecutor(tmp_path, sandbox_mode="isolate")
+    previous = executor._java_heap_mb(16)
+    for limit in range(17, 8193):
+        heap = executor._java_heap_mb(limit)
+        assert 0 <= heap - previous <= 1
+        assert 0 < heap < limit
+        assert limit - heap >= min(limit // 2, 64)
+        assert heap * 4 <= limit * 3
+        previous = heap
+
+
+def test_java_heap_uses_effective_language_and_testcase_limits(tmp_path: Path):
+    executor = JudgeExecutor(tmp_path, sandbox_mode="isolate")
+    job = {"submission": {"language": "java8"}, "problem": {"memory_limit_mb": 256}}
+    limit = executor._testcase_memory_limit_mb(job, {})
+    assert limit == 528
+    assert "-Xmx396m" in executor._command_with_runtime_limits(["java", "Main"], limit)
+    job["problem"]["language_resource_limits"] = {"java8": {"memory_limit_mb": 1024}}
+    limit = executor._testcase_memory_limit_mb(job, {})
+    assert "-Xmx768m" in executor._command_with_runtime_limits(["java", "Main"], limit)
+    limit = executor._testcase_memory_limit_mb(job, {"memory_limit_mb_override": 128})
+    assert "-Xmx64m" in executor._command_with_runtime_limits(["java", "Main"], limit)
+    assert executor._command_with_runtime_limits(["python3", "main.py"], 1024) == ["python3", "main.py"]
 
 
 def test_isolate_mounts_java_symlink_chain(tmp_path: Path):

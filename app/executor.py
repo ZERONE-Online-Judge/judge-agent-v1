@@ -1033,13 +1033,13 @@ class JudgeExecutor:
         ]
 
     def _java_heap_mb(self, memory_limit_mb: int) -> int:
-        if memory_limit_mb <= 128:
-            return 64
-        if memory_limit_mb <= 256:
-            return 128
-        if memory_limit_mb <= 512:
-            return 256
-        return max(256, min(512, int(memory_limit_mb * 0.6)))
+        # This is the effective per-test memory limit, after language overrides.
+        # Reserve 25% (at least 64 MiB) for JVM native memory, code and stacks.
+        # At small limits retain half for the JVM instead of exhausting the heap
+        # with the fixed reserve. Integer MiB rounding must never exceed the cap.
+        # The cgroup still enforces the total; Xmx is not a total-memory limit.
+        reserve_mb = min((memory_limit_mb + 1) // 2, max(64, (memory_limit_mb + 3) // 4))
+        return max(1, memory_limit_mb - reserve_mb)
 
     def _isolate_system_dir_args(self, command: list[str]) -> list[str]:
         executable = Path(command[0]).name if command else ""
