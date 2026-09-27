@@ -98,6 +98,13 @@ cpus_before=$(docker inspect --format '{{.HostConfig.NanoCpus}}' "$cid")
   echo '이미지 태그 또는 CPU/메모리 제한을 자동 보존할 수 없습니다.' >&2
   exit 1
 }
+# A VM can have been downsized since the current container was created.
+# Docker rejects a new container with a CPU quota above the online CPU count.
+printf '%s\n' "$cpus_before" > "$backup/original-nanocpus"
+cpus_before=$(python3 -c 'import os,sys; print(min(int(sys.argv[1]), (os.cpu_count() or 1)*10**9))' "$cpus_before")
+export JUDGE_AGENT_CONTAINER_MEMORY="$memory_before"
+export JUDGE_AGENT_CONTAINER_CPUS
+JUDGE_AGENT_CONTAINER_CPUS=$(python3 -c 'import sys; print(int(sys.argv[1])/1e9)' "$cpus_before")
 saved_image="zerone-judge-agent:before-timing-$stamp"
 new_image="zerone-judge-agent:timing-$stamp"
 docker tag "$image_id" "$saved_image"
@@ -131,9 +138,18 @@ finally:
         os.unlink(name)
 PY
 
-export JUDGE_AGENT_CONTAINER_MEMORY="$memory_before"
-export JUDGE_AGENT_CONTAINER_CPUS
-JUDGE_AGENT_CONTAINER_CPUS=$(python3 -c 'import sys; print(int(sys.argv[1])/1e9)' "$cpus_before")
+if [[ -f deploy/.env ]]; then cp -p deploy/.env "$backup/compose.env"; fi
+python3 - <<'PYENV'
+from pathlib import Path
+import os, re
+p = Path('deploy/.env')
+lines = p.read_text().splitlines() if p.exists() else []
+lines = [line for line in lines if not re.match(r'^\s*(?:export\s+)?JUDGE_AGENT_CONTAINER_(?:CPUS|MEMORY)\s*=', line)]
+lines += ['JUDGE_AGENT_CONTAINER_CPUS=' + os.environ['JUDGE_AGENT_CONTAINER_CPUS'],
+          'JUDGE_AGENT_CONTAINER_MEMORY=' + os.environ['JUDGE_AGENT_CONTAINER_MEMORY']]
+p.write_text('\n'.join(lines) + '\n')
+p.chmod(0o600)
+PYENV
 
 printf '#!/usr/bin/env bash\nset -euo pipefail\ncd %q\n' "$PWD" > "$backup/rollback.sh"
 for file in executor.py settings.py; do
