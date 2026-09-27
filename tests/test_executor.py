@@ -1,6 +1,7 @@
 from pathlib import Path
 import subprocess
 import time
+import pytest
 
 from app.executor import ExecutionResult, JudgeExecutor, TestcaseRunResult as _TestcaseRunResult
 
@@ -340,6 +341,49 @@ def test_parallel_tle_is_final_only_after_serial_confirmation(tmp_path: Path, mo
     assert result.failed_testcase_order == 2
     assert result.runtime_ms == 900
     assert calls == {1: 1, 2: 2}
+
+
+@pytest.mark.parametrize(
+    "initial,retried,expected,failed_order,retry_orders",
+    [
+        (["time_limit_exceeded"] * 4, {}, "time_limit_exceeded", 1, [1]),
+        (["wrong_answer"] + ["time_limit_exceeded"] * 3, {}, "wrong_answer", 1, []),
+        (["time_limit_exceeded"] * 4, {1: "accepted"}, "time_limit_exceeded", 2, [1, 2]),
+        (["time_limit_exceeded"] * 4, {1: "wrong_answer"}, "wrong_answer", 1, [1]),
+    ],
+)
+def test_tle_confirmation_stops_at_first_ordered_failure(
+    tmp_path: Path, monkeypatch, initial, retried, expected, failed_order, retry_orders
+):
+    executor = JudgeExecutor(tmp_path, sandbox_mode="isolate", testcase_parallelism=4)
+    calls = {}
+    retries = []
+    monkeypatch.setattr(executor, "_prepare_checker", lambda *_: None)
+
+    def fake_run(command, job_dir, job, testcase, checker, source_hash, sandbox_container_id):
+        order = int(testcase["display_order"])
+        calls[order] = calls.get(order, 0) + 1
+        status = initial[order - 1]
+        if calls[order] > 1:
+            # Confirmation must wait for the whole parallel batch to finish.
+            assert all(calls.get(i, 0) >= 1 for i in range(1, 5))
+            retries.append(order)
+            status = retried.get(order, status)
+        return _TestcaseRunResult(order, ExecutionResult(
+            status, failed_testcase_order=order if status != "accepted" else None,
+            runtime_ms=order * 10,
+        ))
+
+    monkeypatch.setattr(executor, "_run_single_testcase", fake_run)
+    result = executor._run_testcases(
+        ["program"], tmp_path / "job", {"judge_job_id": "short-circuit"},
+        [{"display_order": i} for i in range(1, 9)], "source-hash",
+    )
+    assert result.status == expected
+    assert result.failed_testcase_order == failed_order
+    assert result.runtime_ms == failed_order * 10
+    assert retries == retry_orders
+    assert set(calls) == {1, 2, 3, 4}  # Do not start the next batch.
 
 
 def test_testcase_accepts_with_custom_checker(tmp_path: Path):

@@ -339,7 +339,6 @@ class JudgeExecutor:
                     )
 
                 testcases_by_order = {int(testcase["display_order"]): testcase for testcase in batch}
-                confirmed_results: list[TestcaseRunResult] = []
                 for result in sorted(batch_results, key=lambda item: item.order):
                     if result.result.status == "time_limit_exceeded":
                         testcase = testcases_by_order[result.order]
@@ -365,9 +364,6 @@ class JudgeExecutor:
                             f"runtime_ms={result.result.runtime_ms}",
                             flush=True,
                         )
-                    confirmed_results.append(result)
-
-                for result in confirmed_results:
                     max_runtime_ms = self._max_metric(max_runtime_ms, result.result.runtime_ms)
                     max_memory_kb = self._max_metric(max_memory_kb, result.result.memory_kb)
                     if result.result.status != "accepted":
