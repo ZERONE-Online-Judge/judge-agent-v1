@@ -10,7 +10,7 @@ RUN apt-get update \
        libc6-dev \
        make \
        default-jdk \
-       docker.io \
+       docker-cli \
     \
     && mkdir -p /etc/apt/keyrings /etc/apt/sources.list.d \
     \
@@ -29,6 +29,7 @@ RUN apt-get update \
     && apt-get update \
     && apt-get install -y --no-install-recommends isolate \
     \
+    && docker --version \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

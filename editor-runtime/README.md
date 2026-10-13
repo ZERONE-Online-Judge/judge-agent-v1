@@ -19,3 +19,8 @@ running. Build these images before deploying Editor's agent-only transport.
 Editor results use the dedicated internal editor-tasks result route. The
 existing JUDGE_OBJECT_URL_ORIGINS mapping and TLS CA remain in force; do not
 use the public domain for internal object downloads or disable TLS checks.
+
+The agent application image includes Debian's
+[docker-cli package](https://packages.debian.org/trixie/docker-cli) and
+verifies the client binary during its build. It connects to the VM's
+existing Docker daemon; no second daemon is needed inside the agent.
