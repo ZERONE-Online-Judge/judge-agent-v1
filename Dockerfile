@@ -10,6 +10,7 @@ RUN apt-get update \
        libc6-dev \
        make \
        default-jdk \
+       docker.io \
     \
     && mkdir -p /etc/apt/keyrings /etc/apt/sources.list.d \
     \

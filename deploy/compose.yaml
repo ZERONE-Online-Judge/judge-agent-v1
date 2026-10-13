@@ -25,6 +25,7 @@ services:
     volumes:
       - ./env/judge-tls:/etc/zoj-tls:ro
       - /var/lib/zerone-judge:/var/lib/zerone-judge
+      - /var/run/docker.sock:/var/run/docker.sock
       - /sys/fs/cgroup:/sys/fs/cgroup:rw
       - /run/isolate:/run/isolate:rw
     privileged: true
@@ -33,3 +34,15 @@ services:
     mem_limit: ${JUDGE_AGENT_CONTAINER_MEMORY:-20g}
     cpus: ${JUDGE_AGENT_CONTAINER_CPUS:-10}
     restart: unless-stopped
+
+  editor-runtime:
+    image: zoj-editor-runtime:agent-v1
+    build:
+      context: ../editor-runtime
+    profiles: [editor-images]
+  editor-renderer:
+    image: zoj-editor-renderer:agent-v1
+    build:
+      context: ../editor-runtime
+      dockerfile: Renderer.Dockerfile
+    profiles: [editor-images]

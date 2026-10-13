@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import socket
 from typing import Any
@@ -37,7 +38,7 @@ class BackendClient:
         except (URLError, TimeoutError, socket.timeout) as error:
             raise RuntimeError(f"backend unavailable: {error}") from error
 
-    def register_node(self) -> str:
+    def register_node(self, execution_capabilities=None, execution_revision=None) -> str:
         response = self._request(
             "POST",
             "/internal/judge/nodes/register",
@@ -46,6 +47,8 @@ class BackendClient:
                 "node_secret": settings.node_secret,
                 "total_slots": settings.total_slots,
                 "agent_version": settings.agent_version,
+                "execution_capabilities": execution_capabilities or [],
+                "execution_revision": execution_revision,
             },
         )
         return response["data"]["judge_node_id"]
@@ -138,3 +141,16 @@ class BackendClient:
             },
             timeout_seconds=5.0,
         )
+
+
+    def report_editor_result(self, job_id, lease_token, *, result=None, error=None):
+        payload = {"result": result} if result is not None else {"error": error}
+        request = Request(self.base_url + f"/internal/judge/editor-tasks/{job_id}/result", data=json.dumps(payload, allow_nan=False).encode(), method="POST",
+                          headers={"Content-Type": "application/json", "X-Judge-Node-Credential": base64.urlsafe_b64encode(settings.node_secret.encode()).decode(), "X-Judge-Lease": lease_token})
+        try:
+            with urlopen(request, timeout=120) as response:
+                return json.loads(response.read())
+        except HTTPError as exc:
+            raise RuntimeError(f"backend http {exc.code}: " + exc.read().decode("utf-8", "replace")[:4000]) from exc
+        except (URLError, TimeoutError, socket.timeout) as exc:
+            raise RuntimeError(f"backend unavailable: {exc}") from exc

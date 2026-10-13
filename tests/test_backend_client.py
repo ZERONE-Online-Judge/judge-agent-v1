@@ -58,3 +58,17 @@ def test_request_wraps_url_error_as_runtime_error(monkeypatch: pytest.MonkeyPatc
 
     with pytest.raises(RuntimeError, match="backend unavailable"):
         client.register_node()
+
+
+def test_editor_result_uses_encoded_credentials_and_a_separate_endpoint(monkeypatch):
+    import base64
+    from app.settings import settings
+    def respond(request,timeout):
+        assert request.full_url.endswith('/internal/judge/editor-tasks/task/result')
+        credential=request.get_header('X-judge-node-credential')
+        assert base64.urlsafe_b64decode(credential).decode()==settings.node_secret
+        assert request.get_header('X-judge-lease')=='lease'
+        assert json.loads(request.data)=={'result':{'status':'ok'}}
+        return _FakeResponse({'data':{'accepted':True}})
+    monkeypatch.setattr('app.backend_client.urlopen',respond)
+    assert BackendClient().report_editor_result('task','lease',result={'status':'ok'})['data']['accepted']

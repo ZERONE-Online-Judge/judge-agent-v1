@@ -8,6 +8,8 @@ from threading import Event, Thread
 
 from app.backend_client import BackendClient
 from app.executor import JudgeExecutor
+from app.editor_executor import EditorExecutor, cleanup_editor_containers
+from app.editor_protocol import PROTOCOL
 from app.log_forwarder import LogForwarder
 from app.settings import settings
 
@@ -36,11 +38,11 @@ def cleanup_isolate_boxes() -> None:
         except Exception:
             pass
 
-def judge_one(client: BackendClient, executor: JudgeExecutor, job: dict) -> None:
+def judge_one(client: BackendClient, executor: JudgeExecutor, job: dict, editor_executor=None) -> None:
     stop_keepalive = Event()
 
     def keepalive() -> None:
-        interval = 30.0
+        interval = 3.0 if job.get("task_type") == PROTOCOL else 30.0
         while not stop_keepalive.wait(interval):
             try:
                 client.renew_lease(
@@ -49,6 +51,8 @@ def judge_one(client: BackendClient, executor: JudgeExecutor, job: dict) -> None
                 )
             except RuntimeError as error:
                 print(f"[judge-agent] lease renew failed for {job['judge_job_id']}: {error}")
+                if job.get("task_type") == PROTOCOL and any(f"http {code}:" in str(error) for code in [403, 404, 409]):
+                    stop_keepalive.set()
 
     def report_progress(status: str, progress_current: int | None, progress_total: int | None) -> None:
         try:
@@ -65,6 +69,20 @@ def judge_one(client: BackendClient, executor: JudgeExecutor, job: dict) -> None
     keepalive_thread = Thread(target=keepalive, daemon=True)
     keepalive_thread.start()
     try:
+        if job.get("task_type") == PROTOCOL:
+            if not editor_executor:
+                raise RuntimeError("Editor executor is missing")
+            value = editor_executor.execute(job, cancelled=stop_keepalive.is_set)
+            for attempt in range(3):
+                try:
+                    client.report_editor_result(job["judge_job_id"], job["lease_token"], result=value)
+                    break
+                except RuntimeError:
+                    if attempt == 2:
+                        raise
+                    time.sleep(1)
+            print(f"[judge-agent] reported Editor task {job['judge_job_id']} status={value['status']}")
+            return
         result = executor.judge(job, progress=report_progress)
         client.report_result(
             job_id=job["judge_job_id"],
@@ -80,6 +98,10 @@ def judge_one(client: BackendClient, executor: JudgeExecutor, job: dict) -> None
     except Exception as error:
         message = "".join(traceback.format_exception_only(type(error), error)).strip()
         try:
+            if job.get("task_type") == PROTOCOL:
+                client.report_editor_result(job["judge_job_id"], job["lease_token"], error=message[-4000:])
+                print(f"[judge-agent] reported Editor task {job['judge_job_id']} failed")
+                return
             client.report_result(
                 job_id=job["judge_job_id"],
                 lease_token=job["lease_token"],
@@ -102,11 +124,13 @@ def judge_one(client: BackendClient, executor: JudgeExecutor, job: dict) -> None
 def main() -> None:
     faulthandler.register(signal.SIGUSR1, file=sys.stderr, all_threads=True)
     cleanup_isolate_boxes()
+    cleanup_editor_containers(settings.node_name)
     client = BackendClient()
     executor = JudgeExecutor()
+    editor_executor = EditorExecutor()
     while True:
         try:
-            node_id = client.register_node()
+            node_id = client.register_node(editor_executor.capabilities, editor_executor.revision)
             break
         except RuntimeError as error:
             print(f"[judge-agent] register failed: {error}")
@@ -148,7 +172,7 @@ def main() -> None:
                         continue
                     for job in claimed:
                         print(f"[judge-agent] claimed {job['judge_job_id']} submission={job['submission']['submission_id']}")
-                        running.add(pool.submit(judge_one, client, executor, job))
+                        running.add(pool.submit(judge_one, client, executor, job, editor_executor))
 
                     if settings.run_once and not claimed and not running:
                         print("[judge-agent] run once completed: no pending jobs")
