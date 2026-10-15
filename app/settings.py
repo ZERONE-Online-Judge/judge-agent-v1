@@ -11,7 +11,7 @@ class Settings:
     total_slots: int = int(os.getenv("JUDGE_TOTAL_SLOTS", "2"))
     testcase_parallelism: int = int(os.getenv("JUDGE_TESTCASE_PARALLELISM", "4"))
     work_root: Path = Path(os.getenv("JUDGE_WORK_ROOT", "/tmp/zerone-judge"))
-    agent_version: str = "0.2.22"
+    agent_version: str = "0.2.23"
     editor_runtime_image: str = os.getenv("JUDGE_EDITOR_RUNTIME_IMAGE", "zoj-editor-runtime:agent-v1")
     editor_renderer_image: str = os.getenv("JUDGE_EDITOR_RENDERER_IMAGE", "zoj-editor-renderer:agent-v1")
     poll_interval_seconds: float = float(os.getenv("JUDGE_POLL_INTERVAL_SECONDS", "1"))

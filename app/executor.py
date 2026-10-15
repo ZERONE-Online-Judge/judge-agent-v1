@@ -26,6 +26,9 @@ from app.object_urls import resolve_object_url
 _isolate_box_counter = itertools.count()
 _sigxfsz = getattr(signal, "SIGXFSZ", None)
 _output_limit_returncodes = {125}
+FULL_VERIFICATION = "editor-judge-full-v1"
+MAX_CASE_OUTPUT_BYTES = 256 * 1024
+MAX_RUN_OUTPUT_BYTES = 16 * 1024 * 1024
 if _sigxfsz is not None:
     _output_limit_returncodes.add(-int(_sigxfsz))
 
@@ -46,6 +49,7 @@ class ExecutionResult:
     failed_testcase_order: int | None = None
     runtime_ms: int | None = None
     memory_kb: int | None = None
+    testcase_results: list[dict] | None = None
 
 
 @dataclass(frozen=True)
@@ -82,7 +86,7 @@ class JudgeExecutor:
         self.work_root.mkdir(parents=True, exist_ok=True)
         self.checker_cache_root.mkdir(parents=True, exist_ok=True)
 
-    def judge(self, job: dict, progress: ProgressCallback | None = None) -> ExecutionResult:
+    def judge(self, job: dict, progress: ProgressCallback | None = None, case_progress=None) -> ExecutionResult:
         submission = job["submission"]
         language = submission["language"]
         source_code = submission["source_code"]
@@ -119,7 +123,7 @@ class JudgeExecutor:
             testcases = job.get("testcases") or []
             if testcases:
                 source_hash = hashlib.sha256(source_code.encode("utf-8")).hexdigest()
-                result = self._run_testcases(prepared, job_dir, job, testcases, source_hash, progress)
+                result = self._run_testcases(prepared, job_dir, job, testcases, source_hash, progress, case_progress)
             else:
                 result = self._run_final(prepared, job_dir, job)
             print(
@@ -262,11 +266,41 @@ class JudgeExecutor:
         testcases: list[dict],
         source_hash: str,
         progress: ProgressCallback | None = None,
+        case_progress=None,
     ) -> ExecutionResult:
         checker = self._prepare_checker(job_dir, job.get("package_files") or [])
         if isinstance(checker, ExecutionResult):
             return checker
         total = len(testcases)
+        collect_all = job.get("collect_all_results") is True and job.get("submission", {}).get("submission_kind") == "editor_verification"
+        observations = []
+        first_failure = None
+        output_budget = MAX_RUN_OUTPUT_BYTES
+        cases_by_order = {int(testcase["display_order"]): testcase for testcase in testcases}
+        def observe(result):
+            nonlocal first_failure, output_budget
+            if first_failure is None and result.result.status != "accepted":
+                first_failure = result.result
+            value = {"index": result.order, "final_status": result.result.status,
+                     "runtime_ms": result.result.runtime_ms, "memory_kb": result.result.memory_kb,
+                     "judge_message": (result.result.message or "")[-2048:]}
+            testcase = cases_by_order[result.order]
+            output = testcase.pop("_editor_output", None)
+            total_bytes = testcase.pop("_editor_output_total_bytes", None)
+            if output is not None:
+                saved = output[:output_budget]
+                output_budget -= len(saved)
+                value.update(output_base64=base64.b64encode(saved).decode("ascii"),
+                             output_total_bytes=total_bytes, output_truncated=len(saved) < total_bytes)
+            observations.append(value)
+            if case_progress:
+                case_progress(value, len(observations), total)
+            elif progress:
+                progress("judging", len(observations), total)
+        def full_result():
+            first = first_failure or ExecutionResult("accepted")
+            return ExecutionResult(first.status, first.message, first.failed_testcase_order,
+                                   max_runtime_ms, max_memory_kb, observations)
         job_id = str(job.get("judge_job_id") or "-")
         max_runtime_ms: int | None = None
         max_memory_kb: int | None = None
@@ -291,7 +325,9 @@ class JudgeExecutor:
                 )
                 max_runtime_ms = self._max_metric(max_runtime_ms, result.result.runtime_ms)
                 max_memory_kb = self._max_metric(max_memory_kb, result.result.memory_kb)
-                if result.result.status != "accepted":
+                if collect_all:
+                    observe(result)
+                elif result.result.status != "accepted":
                     return self._execution_result(
                         result.result.status,
                         result.result.message,
@@ -299,14 +335,14 @@ class JudgeExecutor:
                         runtime_ms=max_runtime_ms,
                         memory_kb=max_memory_kb,
                     )
-                if progress:
+                if progress and not collect_all:
                     progress("judging", index, total)
                 print(
                     f"[judge-agent] job={job_id} testcase={result.order} status={result.result.status} "
                     f"runtime_ms={result.result.runtime_ms} memory_kb={result.result.memory_kb} done={index}/{total}",
                     flush=True,
                 )
-            return self._execution_result("accepted", None, runtime_ms=max_runtime_ms, memory_kb=max_memory_kb)
+            return full_result() if collect_all else self._execution_result("accepted", None, runtime_ms=max_runtime_ms, memory_kb=max_memory_kb)
 
         completed_count = 0
         with ThreadPoolExecutor(max_workers=worker_count) as pool:
@@ -330,7 +366,7 @@ class JudgeExecutor:
                     result = future.result()
                     batch_results.append(result)
                     completed_count += 1
-                    if progress:
+                    if progress and not collect_all:
                         progress("judging", completed_count, total)
                     print(
                         f"[judge-agent] job={job_id} testcase={result.order} status={result.result.status} "
@@ -366,7 +402,9 @@ class JudgeExecutor:
                         )
                     max_runtime_ms = self._max_metric(max_runtime_ms, result.result.runtime_ms)
                     max_memory_kb = self._max_metric(max_memory_kb, result.result.memory_kb)
-                    if result.result.status != "accepted":
+                    if collect_all:
+                        observe(result)
+                    elif result.result.status != "accepted":
                         return self._execution_result(
                             result.result.status,
                             result.result.message,
@@ -374,7 +412,7 @@ class JudgeExecutor:
                             runtime_ms=max_runtime_ms,
                             memory_kb=max_memory_kb,
                         )
-        return self._execution_result("accepted", None, runtime_ms=max_runtime_ms, memory_kb=max_memory_kb)
+        return full_result() if collect_all else self._execution_result("accepted", None, runtime_ms=max_runtime_ms, memory_kb=max_memory_kb)
     def _run_single_testcase(
         self,
         command: list[str],
@@ -429,6 +467,13 @@ class JudgeExecutor:
             return TestcaseRunResult(order, self._execution_result("system_error", message[-4000:], order))
         runtime_ms = getattr(completed, "runtime_ms", None)
         memory_kb = getattr(completed, "memory_kb", None)
+        if job.get("collect_all_results") is True and job.get("submission", {}).get("submission_kind") == "editor_verification":
+            output = getattr(completed, "stdout_prefix", None)
+            if output is None:
+                output = (completed.stdout or "").encode("utf-8")[:MAX_CASE_OUTPUT_BYTES]
+            testcase["_editor_output"] = output
+            size = getattr(completed, "stdout_size", None)
+            testcase["_editor_output_total_bytes"] = size if size is not None else len((completed.stdout or "").encode("utf-8"))
 
         if completed.returncode == 124:
             return TestcaseRunResult(order, self._execution_result("time_limit_exceeded", f"time limit exceeded on testcase {order}", order, runtime_ms=runtime_ms, memory_kb=memory_kb))
@@ -1140,6 +1185,10 @@ class JudgeExecutor:
         stdout = self._read_limited_text(stdout_file)
         stderr = self._read_limited_text(stderr_file) or fallback_stderr
         completed = subprocess.CompletedProcess(command, returncode, stdout, stderr)
+        stdout_file.seek(0)
+        prefix = stdout_file.read(MAX_CASE_OUTPUT_BYTES)
+        completed.stdout_prefix = prefix.encode("utf-8") if isinstance(prefix, str) else prefix
+        completed.stdout_size = self._file_size(stdout_file)
         wall_runtime_ms = max(0, int((time.monotonic() - started_at) * 1000)) if started_at is not None else None
         completed.runtime_ms = measured_runtime_ms if measured_runtime_ms is not None else wall_runtime_ms
         completed.wall_runtime_ms = wall_runtime_ms

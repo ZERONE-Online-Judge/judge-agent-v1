@@ -7,7 +7,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from threading import Event, Thread
 
 from app.backend_client import BackendClient
-from app.executor import JudgeExecutor
+from app.executor import FULL_VERIFICATION, JudgeExecutor
 from app.editor_executor import EditorExecutor, cleanup_editor_containers
 from app.editor_protocol import PROTOCOL
 from app.log_forwarder import LogForwarder
@@ -83,8 +83,22 @@ def judge_one(client: BackendClient, executor: JudgeExecutor, job: dict, editor_
                     time.sleep(1)
             print(f"[judge-agent] reported Editor task {job['judge_job_id']} status={value['status']}")
             return
-        result = executor.judge(job, progress=report_progress)
-        client.report_result(
+        pending_cases = []
+        case_last_sent = time.monotonic()
+        def report_case(value, current, total):
+            nonlocal case_last_sent
+            pending_cases.append(value)
+            if current != 1 and current != total and len(pending_cases) < 16 and time.monotonic() - case_last_sent < .5:
+                return
+            try:
+                client.report_progress(job["judge_job_id"], job["lease_token"], "judging", current, total,
+                                       testcase_results=list(pending_cases))
+                pending_cases.clear()
+                case_last_sent = time.monotonic()
+            except RuntimeError as error:
+                print(f"[judge-agent] testcase progress report failed: {error}")
+        result = executor.judge(job, progress=report_progress, case_progress=report_case)
+        report = dict(
             job_id=job["judge_job_id"],
             lease_token=job["lease_token"],
             final_status=result.status,
@@ -93,7 +107,17 @@ def judge_one(client: BackendClient, executor: JudgeExecutor, job: dict, editor_
             failed_testcase_order=result.failed_testcase_order,
             runtime_ms=result.runtime_ms,
             memory_kb=result.memory_kb,
+            **({"testcase_results": result.testcase_results} if result.testcase_results is not None else {}),
         )
+        attempts = 3 if result.testcase_results is not None else 1
+        for attempt in range(attempts):
+            try:
+                client.report_result(**report)
+                break
+            except RuntimeError:
+                if attempt == attempts - 1:
+                    raise
+                time.sleep(1)
         print(f"[judge-agent] reported {job['judge_job_id']} status={result.status}")
     except Exception as error:
         message = "".join(traceback.format_exception_only(type(error), error)).strip()
@@ -130,7 +154,8 @@ def main() -> None:
     editor_executor = EditorExecutor()
     while True:
         try:
-            node_id = client.register_node(editor_executor.capabilities, editor_executor.revision)
+            node_id = client.register_node([*editor_executor.capabilities, FULL_VERIFICATION],
+                                           editor_executor.revision or FULL_VERIFICATION)
             break
         except RuntimeError as error:
             print(f"[judge-agent] register failed: {error}")

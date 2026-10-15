@@ -72,3 +72,18 @@ def test_editor_result_uses_encoded_credentials_and_a_separate_endpoint(monkeypa
         return _FakeResponse({'data':{'accepted':True}})
     monkeypatch.setattr('app.backend_client.urlopen',respond)
     assert BackendClient().report_editor_result('task','lease',result={'status':'ok'})['data']['accepted']
+
+
+def test_full_verification_case_batches_and_final_outputs_use_bounded_upload_timeouts(monkeypatch):
+    requests = []
+    def respond(request, timeout):
+        requests.append((request.full_url, json.loads(request.data), timeout))
+        return _FakeResponse({'data': {'accepted': True}})
+    monkeypatch.setattr('app.backend_client.urlopen', respond)
+    client = BackendClient()
+    cases = [{'index': 1, 'final_status': 'wrong_answer', 'output_base64': 'NQo='}]
+    client.report_progress('run', 'lease', 'judging', 1, 2, testcase_results=cases)
+    client.report_result('run', 'lease', 'wrong_answer', None, None, 1, testcase_results=cases)
+    assert all(body['testcase_results'] == cases and timeout == 120 for _, body, timeout in requests)
+    client.report_progress('contest-run', 'lease', 'judging', 1, 2)
+    assert 'testcase_results' not in requests[-1][1] and requests[-1][2] == 10

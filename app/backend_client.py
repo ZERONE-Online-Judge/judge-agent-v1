@@ -85,6 +85,7 @@ class BackendClient:
         failed_testcase_order: int | None,
         runtime_ms: int | None = None,
         memory_kb: int | None = None,
+        testcase_results: list[dict] | None = None,
     ) -> None:
         self._request(
             "POST",
@@ -98,7 +99,9 @@ class BackendClient:
                 "failed_testcase_order": failed_testcase_order,
                 "runtime_ms": runtime_ms,
                 "memory_kb": memory_kb,
+                **({"testcase_results": testcase_results} if testcase_results is not None else {}),
             },
+            timeout_seconds=120.0 if testcase_results is not None else 10.0,
         )
 
     def report_progress(
@@ -108,6 +111,8 @@ class BackendClient:
         status: str,
         progress_current: int | None,
         progress_total: int | None,
+        testcase_result: dict | None = None,
+        testcase_results: list[dict] | None = None,
     ) -> None:
         self._request(
             "POST",
@@ -118,7 +123,10 @@ class BackendClient:
                 "status": status,
                 "progress_current": progress_current,
                 "progress_total": progress_total,
+                **({"testcase_result": testcase_result} if testcase_result is not None else {}),
+                **({"testcase_results": testcase_results} if testcase_results is not None else {}),
             },
+            timeout_seconds=120.0 if testcase_results is not None else 10.0,
         )
 
     def renew_lease(self, job_id: str, lease_token: str) -> None:
