@@ -957,6 +957,7 @@ class JudgeExecutor:
                 f"--dir={mount_root}={mount_root}:rw",
                 f"--chdir={cwd}",
                 "--env=PATH=/usr/local/bin:/usr/bin:/bin",
+                "--env=LANG=C.UTF-8",
                 "--env=JAVA_TOOL_OPTIONS=",
                 "--run",
                 "--",
