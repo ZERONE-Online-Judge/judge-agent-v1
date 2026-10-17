@@ -779,3 +779,33 @@ def test_isolate_mounts_java_symlink_chain(tmp_path: Path):
     assert "--dir=/usr=/usr" in args
     if Path("/etc/alternatives").exists():
         assert "--dir=/etc/alternatives=/etc/alternatives" in args
+
+
+@pytest.mark.parametrize('language,filename,compiler,interpreter', [
+    ('pypy3','main.py','pypy3','pypy3'),
+    ('kotlin','Main.kt','kotlinc','java'),
+])
+def test_icpc_languages_compile_before_running(tmp_path,monkeypatch,language,filename,compiler,interpreter):
+    executor=JudgeExecutor(work_root=tmp_path)
+    calls=[]
+    def compile_command(command,cwd):
+        calls.append(command)
+        return subprocess.CompletedProcess(command,0,'','')
+    monkeypatch.setattr(executor,'_run_compiler',compile_command)
+    command=executor._prepare_command(tmp_path,language,'code')
+    assert (tmp_path/filename).read_text()=='code'
+    assert Path(calls[0][0]).name==compiler
+    assert Path(command[0]).name==interpreter
+    if language=='kotlin':
+        runtime=executor._command_with_runtime_limits(command,256)
+        assert '-jar' in runtime and '-Xss64m' in runtime and '-Xmx256m' in runtime and '-Xms256m' in runtime
+        assert executor._language_adjusted_time_limit_ms(language,1000)==1000
+        assert executor._language_adjusted_memory_limit_mb(language,256)==256
+
+
+@pytest.mark.parametrize('interpreter',['/usr/local/bin/pypy3','/usr/local/lib/icpc-jdk/bin/java'])
+def test_icpc_runtime_memory_failures_are_mle(tmp_path,interpreter):
+    executor=JudgeExecutor(work_root=tmp_path)
+    message='MemoryError\n' if interpreter.endswith('pypy3') else 'Could not reserve enough space for object heap'
+    assert executor._is_memory_limit_result(subprocess.CompletedProcess([interpreter],1,'',message))
+    assert not executor._is_memory_limit_result(subprocess.CompletedProcess([interpreter],1,'','Unrelated exception'))

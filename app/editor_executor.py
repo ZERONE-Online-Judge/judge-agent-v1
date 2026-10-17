@@ -28,6 +28,10 @@ class EditorExecutor:
             except (OSError, subprocess.SubprocessError):
                 pass
         self.capabilities = [PROTOCOL] if set(self.images) == {"runtime", "renderer"} else []
+        if self.capabilities:
+            check = subprocess.run(["docker", "image", "inspect", self.images["runtime"], "--format", '{{ index .Config.Labels "zoj.icpc_languages" }}'], capture_output=True, text=True, timeout=10)
+            if check.returncode == 0 and check.stdout.strip() == "v1":
+                self.capabilities.append("editor-icpc-languages-v1")
         self.revision = hashlib.sha256(json.dumps(self.images, sort_keys=True).encode()).hexdigest() if self.capabilities else None
 
     def execute(self, job, cancelled=lambda: False):

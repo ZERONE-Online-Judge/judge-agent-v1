@@ -154,7 +154,7 @@ def main() -> None:
     editor_executor = EditorExecutor()
     while True:
         try:
-            node_id = client.register_node([*editor_executor.capabilities, FULL_VERIFICATION],
+            node_id = client.register_node([*editor_executor.capabilities, FULL_VERIFICATION, "judge-icpc-languages-v1"],
                                            editor_executor.revision or FULL_VERIFICATION)
             break
         except RuntimeError as error:

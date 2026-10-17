@@ -9,6 +9,7 @@ import fcntl
 import itertools
 import json
 import os
+import re
 import signal
 import stat
 import shutil
@@ -164,8 +165,18 @@ class JudgeExecutor:
             return
 
     def _prepare_command(self, job_dir: Path, language: str, source_code: str) -> list[str] | ExecutionResult:
-        if language == "python313":
+        if language in {"python313", "pypy3"}:
+            if language == "pypy3":
+                return self._compile(job_dir, "main.py", source_code,
+                    ["/usr/local/bin/pypy3", "-m", "py_compile", "main.py"],
+                    ["/usr/local/bin/pypy3", str(job_dir / "main.py")])
             return self._prepare_python(job_dir, source_code)
+        if language == "kotlin":
+            return self._compile(job_dir, "Main.kt", source_code,
+                ["/usr/local/bin/kotlinc", "-J-Xmx512m", "-J-XX:ActiveProcessorCount=1",
+                 "Main.kt", "-include-runtime", "-d", "program.jar"],
+                ["/usr/local/lib/icpc-jdk/bin/java", "-Dfile.encoding=UTF-8",
+                 "-jar", str(job_dir / "program.jar")])
         if language == "cpp17":
             return self._compile(
                 job_dir,
@@ -236,7 +247,7 @@ class JudgeExecutor:
         if self.sandbox_mode == "isolate":
             cwd.chmod(original_mode | 0o777)
         try:
-            return self._run_command(command, cwd, timeout_seconds=20)
+            return self._run_command(command, cwd, timeout_seconds=60 if Path(command[0]).name == "kotlinc" else 20)
         finally:
             cwd.chmod(original_mode)
 
@@ -945,7 +956,7 @@ class JudgeExecutor:
                 *self._isolate_system_dir_args(command),
                 f"--dir={mount_root}={mount_root}:rw",
                 f"--chdir={cwd}",
-                "--env=PATH=/usr/bin:/bin",
+                "--env=PATH=/usr/local/bin:/usr/bin:/bin",
                 "--env=JAVA_TOOL_OPTIONS=",
                 "--run",
                 "--",
@@ -1079,6 +1090,8 @@ class JudgeExecutor:
 
         command = list(completed.args) if isinstance(completed.args, list) else []
         executable = Path(str(command[0])).name if command else ""
+        if executable in {"pypy3", "python3", "python3.13"}:
+            return bool(re.search(r"(?m)^MemoryError(?::.*)?$", completed.stderr or ""))
         if executable != "java":
             return False
 
@@ -1087,6 +1100,9 @@ class JudgeExecutor:
             "java.lang.OutOfMemoryError",
             "Java heap space",
             "GC overhead limit exceeded",
+            "Could not reserve enough space",
+            "Native memory allocation (mmap) failed",
+            "There is insufficient memory for the Java Runtime Environment",
         )
         return any(marker in output for marker in java_memory_errors)
 
@@ -1096,6 +1112,10 @@ class JudgeExecutor:
         executable = Path(command[0]).name
         if executable != "java":
             return command
+
+        if "-jar" in command and str(command[-1]).endswith("program.jar"):
+            return [command[0], "-XX:ActiveProcessorCount=1", "-XX:+UseSerialGC", "-Xss64m",
+                    f"-Xms{memory_limit_mb}m", f"-Xmx{memory_limit_mb}m", *command[1:]]
 
         heap_mb = self._java_heap_mb(memory_limit_mb)
         return [

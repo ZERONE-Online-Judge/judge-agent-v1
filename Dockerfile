@@ -1,3 +1,4 @@
+FROM eclipse-temurin:21.0.4_7-jdk-jammy AS icpc-jdk
 FROM python:3.13-slim
 
 RUN apt-get update \
@@ -31,6 +32,11 @@ RUN apt-get update \
     \
     && docker --version \
     && rm -rf /var/lib/apt/lists/*
+
+COPY --from=icpc-jdk /opt/java/openjdk /usr/local/lib/icpc-jdk
+RUN apt-get update && apt-get install -y --no-install-recommends curl unzip bzip2 libffi8 libncursesw6 libtinfo6 && rm -rf /var/lib/apt/lists/*
+COPY deploy/install-icpc-runtimes.sh /tmp/install-icpc-runtimes.sh
+RUN sh /tmp/install-icpc-runtimes.sh && rm /tmp/install-icpc-runtimes.sh
 
 WORKDIR /app
 

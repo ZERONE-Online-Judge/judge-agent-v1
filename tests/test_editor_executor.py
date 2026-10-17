@@ -122,3 +122,25 @@ def test_startup_cleanup_removes_only_own_labelled_editor_runs(monkeypatch):
     assert calls[0]==['docker','ps','-aq','--filter','label=zoj.editor.node=approved-node','--filter','name=zoj-editor-task-']
     assert calls[1]==['docker','rm','-fv','a'*12]
     assert len(calls)==2
+
+@pytest.mark.parametrize('language',['pypy3','kotlin'])
+def test_native_icpc_compiler_artifact_and_execution(native,language):
+    if language=='pypy3':
+        name='sum.py';code=b'a,b=map(int,input().split());print(a+b)\n'
+        compiler=['pypy3','-m','py_compile',name]
+    else:
+        name='Main.kt';code=b'fun main(){val(a,b)=readln().split(" ").map{it.toLong()};println(a+b)}'
+        compiler=['kotlinc','-J-Xmx512m','-J-XX:ActiveProcessorCount=1',name,'-include-runtime','-d','program.jar']
+    compiled=native(wire({name:code},compiler,compile_language=language,cpu_ms=30000,memory_mb=2048,wall_seconds=60,output_bytes=64*1024*1024))
+    assert compiled['status']=='ok' and compiled['exit_code']==0,compiled
+    files={name:code,'.input':b'40 2\n'}
+    if language=='kotlin':
+        assert set(compiled['artifacts'])=={'program.jar'}
+        files['program.jar']=base64.b64decode(compiled['artifacts']['program.jar'])
+        command=['/usr/local/lib/icpc-jdk/bin/java','-Dfile.encoding=UTF-8','-XX:+UseSerialGC','-XX:ActiveProcessorCount=1','-Xss64m','-Xms256m','-Xmx256m','-jar','program.jar']
+    else:
+        command=['pypy3',name]
+    result=native(wire(files,command,memory_mb=256,cpu_ms=2000))
+    assert result['status']=='ok' and result['exit_code']==0,result
+    assert base64.b64decode(result['output_base64'])==b'42\n'
+    assert result['cpu_ms']>0 and result['memory_kb']>0
