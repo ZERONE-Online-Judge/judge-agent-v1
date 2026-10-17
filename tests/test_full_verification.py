@@ -7,8 +7,9 @@ import pytest
 from app.executor import ExecutionResult, JudgeExecutor, TestcaseRunResult as Case
 
 
+@pytest.mark.parametrize('kind', ['editor_verification', 'operator_test'])
 @pytest.mark.parametrize('parallelism', [1, 4])
-def test_editor_runs_every_case_after_failures_and_reports_confirmed_verdicts(tmp_path, monkeypatch, parallelism):
+def test_editor_runs_every_case_after_failures_and_reports_confirmed_verdicts(tmp_path, monkeypatch, parallelism, kind):
     executor = JudgeExecutor(tmp_path, sandbox_mode='local', testcase_parallelism=parallelism)
     monkeypatch.setattr(executor, '_prepare_checker', lambda *_: None)
     statuses = ['accepted', 'wrong_answer', 'time_limit_exceeded', 'memory_limit_exceeded', 'runtime_error', 'accepted']
@@ -22,7 +23,7 @@ def test_editor_runs_every_case_after_failures_and_reports_confirmed_verdicts(tm
         test['_editor_output_total_bytes'] = len(str(index))
         return Case(index, ExecutionResult(status, failed_testcase_order=index if status != 'accepted' else None, runtime_ms=index, memory_kb=index * 10))
     monkeypatch.setattr(executor, '_run_single_testcase', run)
-    result = executor._run_testcases(['code'], tmp_path, {'collect_all_results': True, 'submission': {'submission_kind': 'editor_verification'}},
+    result = executor._run_testcases(['code'], tmp_path, {'collect_all_results': True, 'submission': {'submission_kind': kind}},
                                     [{'display_order': index} for index in range(1, 7)], 'sha',
                                     case_progress=lambda case, current, total: events.append((case, current, total)))
     assert result.status == 'wrong_answer' and result.failed_testcase_order == 2
@@ -35,7 +36,8 @@ def test_editor_runs_every_case_after_failures_and_reports_confirmed_verdicts(tm
     assert [base64.b64decode(row['output_base64']) for row in result.testcase_results] == [str(index).encode() for index in range(1, 7)]
 
 
-def test_contest_jobs_keep_first_failure_semantics_even_with_an_untrusted_flag(tmp_path, monkeypatch):
+@pytest.mark.parametrize('kind', ['participant', 'contest', 'participant_preview', 'mock_judging', 'verification_trial'])
+def test_contest_jobs_keep_first_failure_semantics_even_with_an_untrusted_flag(tmp_path, monkeypatch, kind):
     executor = JudgeExecutor(tmp_path, sandbox_mode='local', testcase_parallelism=1)
     monkeypatch.setattr(executor, '_prepare_checker', lambda *_: None)
     calls = []
@@ -43,16 +45,17 @@ def test_contest_jobs_keep_first_failure_semantics_even_with_an_untrusted_flag(t
         calls.append(test['display_order'])
         return Case(test['display_order'], ExecutionResult('wrong_answer', failed_testcase_order=test['display_order']))
     monkeypatch.setattr(executor, '_run_single_testcase', run)
-    result = executor._run_testcases(['code'], tmp_path, {'collect_all_results': True, 'submission': {'submission_kind': 'contest'}},
+    result = executor._run_testcases(['code'], tmp_path, {'collect_all_results': True, 'submission': {'submission_kind': kind}},
                                     [{'display_order': index} for index in range(1, 4)], 'sha')
     assert calls == [1] and result.testcase_results is None
 
 
-def test_real_stdout_bytes_are_retained_before_sandbox_cleanup(tmp_path):
+@pytest.mark.parametrize('kind', ['editor_verification', 'operator_test'])
+def test_real_stdout_bytes_are_retained_before_sandbox_cleanup(tmp_path, kind):
     executor = JudgeExecutor(tmp_path, sandbox_mode='local', testcase_parallelism=1)
     result = executor.judge({
         'judge_job_id': 'full-output', 'collect_all_results': True,
-        'submission': {'submission_kind': 'editor_verification', 'language': 'python313',
+        'submission': {'submission_kind': kind, 'language': 'python313',
                        'source_code': 'import sys;sys.stdout.buffer.write(bytes([0,255,13,10]))'},
         'testcases': [{'display_order': index, 'input_text': '', 'output_text': '', 'input_storage_key': 'in', 'output_storage_key': 'out'} for index in [1, 2]],
     })
@@ -97,3 +100,27 @@ def test_progress_upload_failure_and_final_retry_preserve_all_evidence(monkeypat
     assert client.report_result.call_count == 2
     assert all(call.kwargs['testcase_results'] == cases for call in client.report_result.call_args_list)
     assert all(call.kwargs['final_status'] == 'accepted' for call in client.report_result.call_args_list)
+
+
+def test_real_operator_code_continues_after_wa_re_and_timeout(tmp_path):
+    executor = JudgeExecutor(tmp_path, sandbox_mode='local', testcase_parallelism=1)
+    source = """n=int(input())
+if n == 1:
+    print('wrong')
+elif n == 2:
+    raise RuntimeError('intentional fixture failure')
+elif n == 3:
+    while True: pass
+else:
+    print('ok')
+"""
+    result = executor.judge({
+        'judge_job_id': 'operator-mixed-real', 'collect_all_results': True,
+        'problem': {'time_limit_ms': 100, 'memory_limit_mb': 128},
+        'submission': {'submission_kind': 'operator_test', 'language': 'python313', 'source_code': source},
+        'testcases': [{'display_order': i+1, 'input_text': str(i), 'output_text': 'ok\n',
+                       'input_storage_key': 'in', 'output_storage_key': 'out'} for i in range(5)]})
+    assert [case['final_status'] for case in result.testcase_results] == [
+        'accepted','wrong_answer','runtime_error','time_limit_exceeded','accepted']
+    assert result.status == 'wrong_answer' and result.failed_testcase_order == 2
+    assert base64.b64decode(result.testcase_results[-1]['output_base64']) == b'ok\n'

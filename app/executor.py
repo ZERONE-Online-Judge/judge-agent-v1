@@ -28,6 +28,7 @@ _isolate_box_counter = itertools.count()
 _sigxfsz = getattr(signal, "SIGXFSZ", None)
 _output_limit_returncodes = {125}
 FULL_VERIFICATION = "editor-judge-full-v1"
+ZOJ_FULL_VERIFICATION = "zoj-judge-full-v1"
 MAX_CASE_OUTPUT_BYTES = 256 * 1024
 MAX_RUN_OUTPUT_BYTES = 16 * 1024 * 1024
 if _sigxfsz is not None:
@@ -283,7 +284,7 @@ class JudgeExecutor:
         if isinstance(checker, ExecutionResult):
             return checker
         total = len(testcases)
-        collect_all = job.get("collect_all_results") is True and job.get("submission", {}).get("submission_kind") == "editor_verification"
+        collect_all = job.get("collect_all_results") is True and job.get("submission", {}).get("submission_kind") in {"editor_verification", "operator_test"}
         observations = []
         first_failure = None
         output_budget = MAX_RUN_OUTPUT_BYTES
@@ -478,7 +479,7 @@ class JudgeExecutor:
             return TestcaseRunResult(order, self._execution_result("system_error", message[-4000:], order))
         runtime_ms = getattr(completed, "runtime_ms", None)
         memory_kb = getattr(completed, "memory_kb", None)
-        if job.get("collect_all_results") is True and job.get("submission", {}).get("submission_kind") == "editor_verification":
+        if job.get("collect_all_results") is True and job.get("submission", {}).get("submission_kind") in {"editor_verification", "operator_test"}:
             output = getattr(completed, "stdout_prefix", None)
             if output is None:
                 output = (completed.stdout or "").encode("utf-8")[:MAX_CASE_OUTPUT_BYTES]
