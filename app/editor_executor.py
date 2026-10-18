@@ -46,13 +46,16 @@ class EditorExecutor:
         if payload["runtime"] != job["runtime"]:
             raise RuntimeError("Editor 실행 환경이 일치하지 않습니다.")
         config = payload["config"]
+        # Reserve parsing/output buffers for the trusted supervisor separately.
+        # The runtime still enforces config["memory_mb"] on uploaded code.
+        overhead_mb = 256 + (sum(len(entry["base64"]) for entry in payload["files"].values()) * 3 + config["output_bytes"] * 3) // 1024**2
         name = "zoj-editor-task-" + uuid4().hex
         settings.work_root.mkdir(parents=True, exist_ok=True)
         folder = Path(tempfile.mkdtemp(prefix="editor-task-", dir=settings.work_root))
         args = ["docker", "run", "-i", "--name", name, "--label", "zoj.editor.node=" + getattr(settings,"node_name","judge-demo"), "--network=none", "--read-only", "--cap-drop=ALL",
                 "--cap-add=SETUID", "--cap-add=SETGID", "--cap-add=CHOWN", "--cap-add=KILL", "--cap-add=DAC_OVERRIDE",
                 "--security-opt=no-new-privileges", "--pids-limit=128", "--cpus=1",
-                f"--memory={config['memory_mb'] + 256}m", f"--memory-swap={config['memory_mb'] + 256}m",
+                f"--memory={config['memory_mb'] + overhead_mb}m", f"--memory-swap={config['memory_mb'] + overhead_mb}m",
                 "--ulimit", "nofile=256:256", "--ulimit", "core=0:0", "--tmpfs", "/tmp:rw,nosuid,nodev,size=128m,mode=1777",
                 "--volume", "/work", "--workdir=/work", self.images[payload["runtime"]]]
         proc = None

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import base64
+import copy
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import gzip
 import fcntl
@@ -463,7 +464,12 @@ class JudgeExecutor:
                                 else str(case_dir / part[len(prefix):]) if part.startswith(prefix)
                                 else part for part in command]
             print(f"[judge-agent] job={job_id} testcase={order} stage=run:start", flush=True)
-            completed = self._run_command(
+            runner = self
+            if job.get("submission", {}).get("submission_kind") == "editor_verification":
+                # A per-case copy keeps concurrent contest output limits intact.
+                runner = copy.copy(self)
+                runner.output_limit_bytes = 128 * 1024**2
+            completed = runner._run_command(
                 case_command,
                 case_dir,
                 timeout_seconds=self._testcase_time_limit_seconds(job, testcase),

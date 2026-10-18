@@ -124,3 +124,22 @@ else:
         'accepted','wrong_answer','runtime_error','time_limit_exceeded','accepted']
     assert result.status == 'wrong_answer' and result.failed_testcase_order == 2
     assert base64.b64decode(result.testcase_results[-1]['output_base64']) == b'ok\n'
+
+
+def test_large_editor_stdout_does_not_change_contest_output_limit(tmp_path):
+    size = 17 * 1024**2
+    executor = JudgeExecutor(tmp_path, sandbox_mode='local', testcase_parallelism=1, output_limit_bytes=10*1024**2)
+    def job(kind):
+        return {'judge_job_id': 'large-output-'+kind, 'collect_all_results': True,
+                'submission': {'submission_kind': kind, 'language':'python313',
+                               'source_code': f'import sys;sys.stdout.write("x"*{size})'},
+                'testcases': [{'display_order':1,'input_text':'','output_text':'x'*size,
+                               'input_storage_key':'in','output_storage_key':'out'}]}
+    editor = executor.judge(job('editor_verification'))
+    assert editor.status == 'accepted'
+    assert editor.testcase_results[0]['output_total_bytes'] == size
+    assert editor.testcase_results[0]['output_truncated']
+    assert executor.output_limit_bytes == 10*1024**2
+    participant = executor.judge(job('participant'))
+    assert participant.status == 'output_limit_exceeded'
+    assert executor.output_limit_bytes == 10*1024**2
