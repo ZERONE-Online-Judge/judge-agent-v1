@@ -707,6 +707,57 @@ def test_other_language_overrides_do_not_replace_default_adjustments(tmp_path: P
     assert executor._problem_memory_limit_mb(job) == 544
 
 
+@pytest.mark.parametrize("language,seconds,memory", [
+    ("cpp17", 1.0, 256), ("c99", 1.0, 256),
+    ("python313", 5.0, 544), ("java8", 3.0, 528),
+    ("pypy3", 5.0, 640), ("kotlin", 3.0, 528),
+])
+def test_automatic_limits_reach_the_testcase_sandbox(tmp_path, language, seconds, memory):
+    class CapturingExecutor(JudgeExecutor):
+        def _prepare_command(self, job_dir, language, source_code):
+            return ["test-program"]
+
+        def _run_command(self, command, cwd, timeout_seconds, **kwargs):
+            self.captured = (timeout_seconds, kwargs.get("memory_limit_mb"))
+            result = subprocess.CompletedProcess(command, 0, "42\n", "")
+            result.runtime_ms = 1
+            result.memory_kb = 1024
+            return result
+
+    expected = tmp_path / "answer.txt"
+    expected.write_text("42\n")
+    input_file = tmp_path / "input.txt"
+    input_file.write_text("")
+    executor = CapturingExecutor(tmp_path, sandbox_mode="local")
+    job = {
+        "judge_job_id": "limit-capture",
+        "submission": {"language": language, "source_code": "test"},
+        "problem": {"time_limit_ms": 1000, "memory_limit_mb": 256},
+        "testcases": [{"display_order": 1, "input_storage_key": str(input_file),
+                       "output_storage_key": str(expected)}],
+    }
+    assert executor.judge(job).status == "accepted"
+    assert executor.captured == (seconds, memory)
+
+
+@pytest.mark.parametrize("language,seconds,memory", [
+    ("pypy3", 5.0, 640), ("kotlin", 3.0, 528),
+])
+def test_new_language_overrides_keep_priority(tmp_path, language, seconds, memory):
+    executor = JudgeExecutor(tmp_path, sandbox_mode="local")
+    problem = {"time_limit_ms": 1000, "memory_limit_mb": 256}
+    job = {"problem": problem, "submission": {"language": language}}
+    problem["language_resource_limits"] = {language: {"time_limit_ms": 750}}
+    assert executor._testcase_time_limit_seconds(job, {}) == 0.75
+    assert executor._testcase_memory_limit_mb(job, {}) == memory
+    problem["language_resource_limits"][language] = {"memory_limit_mb": 384}
+    assert executor._testcase_time_limit_seconds(job, {}) == seconds
+    assert executor._testcase_memory_limit_mb(job, {}) == 384
+    problem["language_resource_limits"][language]["time_limit_ms"] = 750
+    assert executor._testcase_time_limit_seconds(job, {"time_limit_ms_override": 250}) == 0.25
+    assert executor._testcase_memory_limit_mb(job, {"memory_limit_mb_override": 128}) == 128
+
+
 def test_java_command_gets_conservative_heap_limit(tmp_path: Path):
     executor = JudgeExecutor(tmp_path, sandbox_mode="isolate")
     command = executor._command_with_runtime_limits(
@@ -799,8 +850,8 @@ def test_icpc_languages_compile_before_running(tmp_path,monkeypatch,language,fil
     if language=='kotlin':
         runtime=executor._command_with_runtime_limits(command,256)
         assert '-jar' in runtime and '-Xss64m' in runtime and '-Xmx256m' in runtime and '-Xms256m' in runtime
-        assert executor._language_adjusted_time_limit_ms(language,1000)==1000
-        assert executor._language_adjusted_memory_limit_mb(language,256)==256
+        assert executor._language_adjusted_time_limit_ms(language,1000)==3000
+        assert executor._language_adjusted_memory_limit_mb(language,256)==528
 
 
 @pytest.mark.parametrize('interpreter',['/usr/local/bin/pypy3','/usr/local/lib/icpc-jdk/bin/java'])

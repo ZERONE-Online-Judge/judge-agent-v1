@@ -37,10 +37,14 @@ if _sigxfsz is not None:
 _LANGUAGE_TIME_LIMIT_ADJUSTMENTS: dict[str, tuple[float, int]] = {
     "java8": (2.0, 1000),
     "python313": (3.0, 2000),
+    "pypy3": (3.0, 2000),
+    "kotlin": (2.0, 1000),
 }
 _LANGUAGE_MEMORY_LIMIT_ADJUSTMENTS: dict[str, tuple[float, int]] = {
     "java8": (2.0, 16),
     "python313": (2.0, 32),
+    "pypy3": (2.0, 128),
+    "kotlin": (2.0, 16),
 }
 
 
