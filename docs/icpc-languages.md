@@ -21,12 +21,23 @@ We additionally set `-XX:ActiveProcessorCount=1` for the single-CPU sandbox.
 The jar packaging differs from ICPC's class-directory + kotlin launcher;
 the compiler version, JVM, standard library and runtime flags are fixed.
 
-These new languages use the problem's base CPU time and total memory limit
-without a language multiplier, as in the referenced ICPC environment. ZOJ's
-explicit per-language problem overrides still take precedence. JVM/PyPy/JIT
-memory counts toward the total sandbox limit; heap size is not extra memory.
-Editor isolated execution uses raw problem limits. Existing CPython/Java
-language corrections in the ZOJ contest judge are retained.
+Language toolchain versions do not determine language resource allowances.
+ZOJ uses these defaults when there is no explicit per-language limit:
+
+- CPython: CPU base * 3 + 2000 ms; memory base * 2 + 32 MiB.
+- PyPy: CPU base * 3 + 2000 ms; memory base * 2 + 128 MiB.
+- Java and Kotlin: CPU base * 2 + 1000 ms; memory base * 2 + 16 MiB.
+- C and C++: unchanged base limits.
+
+Explicit time and memory fields take precedence independently. The backend
+resolves the problem's disable_auto_adjustment flag to explicit numeric
+limits before assignment, so existing agents also honor the checkbox.
+Testcase overrides retain the highest priority. Measurements remain actual
+CPU time and peak memory; displayed values are never divided by a multiplier.
+JVM/PyPy/JIT memory counts toward the sandbox total; heap is not extra memory.
+Editor online verification and stress comparisons use the same judge queue.
+Generator, Validator and reference-answer preparation tasks remain distinct
+Editor tool executions and their timings are not solution judging results.
 
 Only updated agents advertising `judge-icpc-languages-v1` claim new-language
 judging jobs. Editor tools require `editor-icpc-languages-v1`, advertised only
