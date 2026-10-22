@@ -48,7 +48,8 @@ def run() -> None:
         executor = JudgeExecutor(root / "work", sandbox_mode="isolate", testcase_parallelism=1)
         cases = {
             "python313": "print(42)",
-            "pypy3": "import sys; assert 'utf' in sys.stdin.encoding.lower(); print(42)",
+            "python311": "import sys; assert sys.version_info[:3] == (3,11,17); print(42)",
+            "pypy3": "import sys; assert sys.version_info[:3] == (3,11,17); assert 'utf' in sys.stdin.encoding.lower(); print(42)",
             "kotlin": "fun main(){println(42)}",
             "c99": '#include <stdio.h>\nint main(void) { puts("42"); return 0; }',
             "cpp17": '#include <iostream>\nint main() { std::cout << 42 << "\\n"; }',

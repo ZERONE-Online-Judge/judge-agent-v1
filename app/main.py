@@ -146,16 +146,19 @@ def judge_one(client: BackendClient, executor: JudgeExecutor, job: dict, editor_
 
 
 def main() -> None:
+    import hashlib
+    from app.runtime_policy import runtime_fingerprint
     faulthandler.register(signal.SIGUSR1, file=sys.stderr, all_threads=True)
     cleanup_isolate_boxes()
     cleanup_editor_containers(settings.node_name)
     client = BackendClient()
     executor = JudgeExecutor()
     editor_executor = EditorExecutor()
+    execution_revision = hashlib.sha256(((editor_executor.revision or "") + runtime_fingerprint()).encode()).hexdigest()
     while True:
         try:
-            node_id = client.register_node([*editor_executor.capabilities, FULL_VERIFICATION, ZOJ_FULL_VERIFICATION, "judge-icpc-languages-v1"],
-                                           editor_executor.revision or FULL_VERIFICATION)
+            node_id = client.register_node([*editor_executor.capabilities, FULL_VERIFICATION, ZOJ_FULL_VERIFICATION, "judge-icpc-languages-v1", "judge-zoj-runtime-v1"],
+                                           execution_revision)
             break
         except RuntimeError as error:
             print(f"[judge-agent] register failed: {error}")

@@ -687,7 +687,7 @@ def test_language_resource_overrides_are_passed_to_testcase_runner(tmp_path: Pat
     )
 
     assert result.status == "accepted"
-    assert executor.run_calls == [(0.75, 384)]
+    assert executor.run_calls == [(20, None), (0.75, 384)]
 
 
 def test_other_language_overrides_do_not_replace_default_adjustments(tmp_path: Path):
@@ -765,14 +765,11 @@ def test_java_command_gets_conservative_heap_limit(tmp_path: Path):
         512,
     )
 
-    assert command[1:7] == [
-        "-Xmx384m",
-        "-Xss256k",
-        "-XX:+UseSerialGC",
-        "-XX:ReservedCodeCacheSize=32m",
-        "-XX:CompressedClassSpaceSize=16m",
-        "-XX:MaxMetaspaceSize=64m",
-    ]
+    assert "-Xmx384m" in command
+    assert "-Xms32m" in command
+    assert "-Xss8m" in command
+    assert "-XX:ActiveProcessorCount=1" in command
+    assert "-XX:+UseSerialGC" in command
 
 
 def test_java_heap_oom_maps_to_memory_limit(tmp_path: Path):
@@ -836,7 +833,7 @@ def test_isolate_mounts_java_symlink_chain(tmp_path: Path):
     ('pypy3','main.py','pypy3','pypy3'),
     ('kotlin','Main.kt','kotlinc','java'),
 ])
-def test_icpc_languages_compile_before_running(tmp_path,monkeypatch,language,filename,compiler,interpreter):
+def test_zoj_languages_compile_before_running(tmp_path,monkeypatch,language,filename,compiler,interpreter):
     executor=JudgeExecutor(work_root=tmp_path)
     calls=[]
     def compile_command(command,cwd):
@@ -849,13 +846,13 @@ def test_icpc_languages_compile_before_running(tmp_path,monkeypatch,language,fil
     assert Path(command[0]).name==interpreter
     if language=='kotlin':
         runtime=executor._command_with_runtime_limits(command,256)
-        assert '-jar' in runtime and '-Xss64m' in runtime and '-Xmx256m' in runtime and '-Xms256m' in runtime
+        assert '-jar' in runtime and '-Xss8m' in runtime and '-Xmx192m' in runtime and '-Xms32m' in runtime
         assert executor._language_adjusted_time_limit_ms(language,1000)==3000
         assert executor._language_adjusted_memory_limit_mb(language,256)==528
 
 
-@pytest.mark.parametrize('interpreter',['/usr/local/bin/pypy3','/usr/local/lib/icpc-jdk/bin/java'])
-def test_icpc_runtime_memory_failures_are_mle(tmp_path,interpreter):
+@pytest.mark.parametrize('interpreter',['/usr/local/bin/pypy3','/usr/local/lib/zoj-jdk/bin/java'])
+def test_zoj_runtime_memory_failures_are_mle(tmp_path,interpreter):
     executor=JudgeExecutor(work_root=tmp_path)
     message='MemoryError\n' if interpreter.endswith('pypy3') else 'Could not reserve enough space for object heap'
     assert executor._is_memory_limit_result(subprocess.CompletedProcess([interpreter],1,'',message))

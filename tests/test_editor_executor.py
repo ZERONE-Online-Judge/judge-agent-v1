@@ -137,7 +137,8 @@ def test_native_icpc_compiler_artifact_and_execution(native,language):
     if language=='kotlin':
         assert set(compiled['artifacts'])=={'program.jar'}
         files['program.jar']=base64.b64decode(compiled['artifacts']['program.jar'])
-        command=['/usr/local/lib/icpc-jdk/bin/java','-Dfile.encoding=UTF-8','-XX:+UseSerialGC','-XX:ActiveProcessorCount=1','-Xss64m','-Xms256m','-Xmx256m','-jar','program.jar']
+        from app.runtime_policy import with_runtime_limits
+        command=with_runtime_limits(['java','-jar','program.jar'],256)
     else:
         command=['pypy3',name]
     result=native(wire(files,command,memory_mb=256,cpu_ms=2000))
