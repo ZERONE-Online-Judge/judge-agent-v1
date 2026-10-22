@@ -12,6 +12,7 @@ from uuid import uuid4
 from .editor_protocol import PROTOCOL, MAX_WIRE_BYTES, unpack, validate_result
 from .object_urls import resolve_object_url
 from .settings import settings
+from .cpu_pool import production_pool
 
 
 class EditorExecutor:
@@ -32,9 +33,20 @@ class EditorExecutor:
             check = subprocess.run(["docker", "image", "inspect", self.images["runtime"], "--format", '{{ index .Config.Labels "zoj.icpc_languages" }}'], capture_output=True, text=True, timeout=10)
             if check.returncode == 0 and check.stdout.strip() == "v1":
                 self.capabilities.append("editor-icpc-languages-v1")
+        if self.capabilities:
+            check = subprocess.run(["docker", "image", "inspect", self.images["runtime"], "--format", '{{ index .Config.Labels "zoj.runtime_policy" }}'], capture_output=True, text=True, timeout=10)
+            if check.returncode == 0 and check.stdout.strip() == "v1":
+                self.capabilities.append("editor-zoj-runtime-v1")
         self.revision = hashlib.sha256(json.dumps(self.images, sort_keys=True).encode()).hexdigest() if self.capabilities else None
 
     def execute(self, job, cancelled=lambda: False):
+        pool = production_pool(settings)
+        if pool:
+            with pool.lease() as (_, cpu):
+                return self._execute(job, cancelled, cpu)
+        return self._execute(job, cancelled)
+
+    def _execute(self, job, cancelled, cpu=None):
         if not self.capabilities:
             raise RuntimeError("Editor 실행 이미지가 준비되지 않았습니다.")
         target = resolve_object_url(job["input_url"], settings.internal_api_base_url, os.getenv("JUDGE_OBJECT_URL_ORIGINS", ""))
@@ -58,6 +70,8 @@ class EditorExecutor:
                 f"--memory={config['memory_mb'] + overhead_mb}m", f"--memory-swap={config['memory_mb'] + overhead_mb}m",
                 "--ulimit", "nofile=256:256", "--ulimit", "core=0:0", "--tmpfs", "/tmp:rw,nosuid,nodev,size=128m,mode=1777",
                 "--volume", "/work", "--workdir=/work", self.images[payload["runtime"]]]
+        if cpu is not None:
+            args.insert(2, f"--cpuset-cpus={cpu}")
         proc = None
         try:
             (folder / "input.json").write_text(json.dumps({"config": config, "files": payload["files"]}))

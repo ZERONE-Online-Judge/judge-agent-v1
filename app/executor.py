@@ -22,6 +22,8 @@ from urllib.request import urlopen
 from collections.abc import Callable
 
 from app.settings import settings
+from app.cpu_pool import production_pool
+from app.runtime_policy import JAVA, JAVAC, PYTHON, jvm_heap_mb, with_runtime_limits
 from app.object_urls import resolve_object_url
 
 
@@ -38,12 +40,14 @@ if _sigxfsz is not None:
 _LANGUAGE_TIME_LIMIT_ADJUSTMENTS: dict[str, tuple[float, int]] = {
     "java8": (2.0, 1000),
     "python313": (3.0, 2000),
+    "python311": (3.0, 2000),
     "pypy3": (3.0, 2000),
     "kotlin": (2.0, 1000),
 }
 _LANGUAGE_MEMORY_LIMIT_ADJUSTMENTS: dict[str, tuple[float, int]] = {
     "java8": (2.0, 16),
     "python313": (2.0, 32),
+    "python311": (2.0, 32),
     "pypy3": (2.0, 128),
     "kotlin": (2.0, 16),
 }
@@ -84,6 +88,9 @@ class JudgeExecutor:
         output_limit_bytes: int | None = None,
         testcase_parallelism: int | None = None,
     ) -> None:
+        self.cpu_pool = production_pool(settings) if (sandbox_mode or settings.sandbox_mode) == "isolate" else None
+        if self.cpu_pool:
+            self.cpu_pool.configure_isolate("/etc/isolate")
         self.work_root = work_root or settings.work_root
         self.sandbox_mode = sandbox_mode or settings.sandbox_mode
         self.checker_sandbox_mode = checker_sandbox_mode or sandbox_mode or settings.checker_sandbox_mode
@@ -171,18 +178,19 @@ class JudgeExecutor:
             return
 
     def _prepare_command(self, job_dir: Path, language: str, source_code: str) -> list[str] | ExecutionResult:
-        if language in {"python313", "pypy3"}:
-            if language == "pypy3":
-                return self._compile(job_dir, "main.py", source_code,
-                    ["/usr/local/bin/pypy3", "-m", "py_compile", "main.py"],
-                    ["/usr/local/bin/pypy3", str(job_dir / "main.py")])
-            return self._prepare_python(job_dir, source_code)
+        if language in {"python311", "python313", "pypy3"}:
+            interpreter = ("/usr/local/bin/pypy3" if language == "pypy3" else
+                           PYTHON if language == "python311" else "/usr/local/bin/python3.13")
+            if self.sandbox_mode == "local" and not Path(interpreter).exists() and language == "python313":
+                interpreter = "/usr/bin/python3"
+            return self._compile(job_dir, "main.py", source_code,
+                [interpreter, "-m", "py_compile", "main.py"],
+                [interpreter, str(job_dir / "main.py")])
         if language == "kotlin":
             return self._compile(job_dir, "Main.kt", source_code,
                 ["/usr/local/bin/kotlinc", "-J-Xmx512m", "-J-XX:ActiveProcessorCount=1",
                  "Main.kt", "-include-runtime", "-d", "program.jar"],
-                ["/usr/local/lib/icpc-jdk/bin/java", "-Dfile.encoding=UTF-8",
-                 "-jar", str(job_dir / "program.jar")])
+                [JAVA, "-jar", str(job_dir / "program.jar")])
         if language == "cpp17":
             return self._compile(
                 job_dir,
@@ -206,11 +214,6 @@ class JudgeExecutor:
             message=f"unsupported language: {language}",
         )
 
-    def _prepare_python(self, job_dir: Path, source_code: str) -> list[str]:
-        source = job_dir / "main.py"
-        source.write_text(source_code, encoding="utf-8")
-        return ["/usr/local/bin/python3.13" if Path("/usr/local/bin/python3.13").exists() else "/usr/bin/python3", str(source)]
-
     def _compile(self, job_dir: Path, filename: str, source_code: str, compile_command: list[str], run_command: list[str]) -> list[str] | ExecutionResult:
         (job_dir / filename).write_text(source_code, encoding="utf-8")
         compiled = self._run_compiler(compile_command, job_dir)
@@ -226,13 +229,11 @@ class JudgeExecutor:
         (job_dir / "Main.java").write_text(source_code, encoding="utf-8")
         compiled = self._run_compiler(
             [
-                "/usr/bin/javac",
-                "-J-Xmx96m",
-                "-J-Xss256k",
+                JAVAC,
+                "-encoding", "UTF-8",
+                "-J-Xmx256m",
+                "-J-XX:ActiveProcessorCount=1",
                 "-J-XX:+UseSerialGC",
-                "-J-XX:ReservedCodeCacheSize=32m",
-                "-J-XX:CompressedClassSpaceSize=16m",
-                "-J-XX:MaxMetaspaceSize=64m",
                 "--release",
                 "8",
                 "Main.java",
@@ -244,7 +245,7 @@ class JudgeExecutor:
                 status="compile_error",
                 message=compiled.stderr[-4000:] or compiled.stdout[-4000:],
             )
-        return ["/usr/bin/java", "-cp", str(job_dir), "Main"]
+        return [JAVA, "-cp", str(job_dir), "Main"]
 
     def _run_compiler(self, command: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
         # Compiler input is untrusted too (e.g. absolute #include / .incbin).
@@ -585,9 +586,7 @@ class JudgeExecutor:
         if suffix == ".py":
             return PreparedChecker(
                 [
-                    "/usr/local/bin/python3.13"
-                    if Path("/usr/local/bin/python3.13").exists()
-                    else "/usr/bin/python3",
+                    PYTHON if self.checker_sandbox_mode != "local" or Path(PYTHON).exists() else "/usr/bin/python3",
                     str(source_path),
                 ],
                 checker_dir,
@@ -928,9 +927,24 @@ class JudgeExecutor:
         mount_root: Path,
         memory_limit_mb: int,
     ) -> subprocess.CompletedProcess[str]:
+        if self.cpu_pool:
+            with self.cpu_pool.lease() as (box_id, _):
+                return self._run_isolate_box(command, cwd, timeout_seconds, stdin, mount_root, memory_limit_mb, box_id)
+        return self._run_isolate_box(command, cwd, timeout_seconds, stdin, mount_root, memory_limit_mb, self._next_isolate_box_id())
+
+    def _run_isolate_box(
+        self,
+        command: list[str],
+        cwd: Path,
+        timeout_seconds: float,
+        stdin: str,
+        mount_root: Path,
+        memory_limit_mb: int,
+        box_id: int,
+    ) -> subprocess.CompletedProcess[str]:
         cwd.mkdir(parents=True, exist_ok=True)
         mount_root.mkdir(parents=True, exist_ok=True)
-        box_id = self._next_isolate_box_id()
+
         meta_dir = tempfile.TemporaryDirectory(prefix="zoj-isolate-meta-")
         meta_path = Path(meta_dir.name) / "meta.txt"
         stdin_file = tempfile.TemporaryFile()
@@ -1102,8 +1116,8 @@ class JudgeExecutor:
 
         command = list(completed.args) if isinstance(completed.args, list) else []
         executable = Path(str(command[0])).name if command else ""
-        if executable in {"pypy3", "python3", "python3.13"}:
-            return bool(re.search(r"(?m)^MemoryError(?::.*)?$", completed.stderr or ""))
+        if executable in {"pypy3", "python3", "python3.11", "python3.13"}:
+            return bool(re.search(r"(?m)^MemoryError(?::.*)?$", completed.stderr or "")) or "Fatal RPython error: out of memory" in (completed.stderr or "")
         if executable != "java":
             return False
 
@@ -1119,36 +1133,10 @@ class JudgeExecutor:
         return any(marker in output for marker in java_memory_errors)
 
     def _command_with_runtime_limits(self, command: list[str], memory_limit_mb: int) -> list[str]:
-        if not command:
-            return command
-        executable = Path(command[0]).name
-        if executable != "java":
-            return command
-
-        if "-jar" in command and str(command[-1]).endswith("program.jar"):
-            return [command[0], "-XX:ActiveProcessorCount=1", "-XX:+UseSerialGC", "-Xss64m",
-                    f"-Xms{memory_limit_mb}m", f"-Xmx{memory_limit_mb}m", *command[1:]]
-
-        heap_mb = self._java_heap_mb(memory_limit_mb)
-        return [
-            command[0],
-            f"-Xmx{heap_mb}m",
-            "-Xss256k",
-            "-XX:+UseSerialGC",
-            "-XX:ReservedCodeCacheSize=32m",
-            "-XX:CompressedClassSpaceSize=16m",
-            "-XX:MaxMetaspaceSize=64m",
-            *command[1:],
-        ]
+        return with_runtime_limits(command, memory_limit_mb)
 
     def _java_heap_mb(self, memory_limit_mb: int) -> int:
-        # This is the effective per-test memory limit, after language overrides.
-        # Reserve 25% (at least 64 MiB) for JVM native memory, code and stacks.
-        # At small limits retain half for the JVM instead of exhausting the heap
-        # with the fixed reserve. Integer MiB rounding must never exceed the cap.
-        # The cgroup still enforces the total; Xmx is not a total-memory limit.
-        reserve_mb = min((memory_limit_mb + 1) // 2, max(64, (memory_limit_mb + 3) // 4))
-        return max(1, memory_limit_mb - reserve_mb)
+        return jvm_heap_mb(memory_limit_mb)
 
     def _isolate_system_dir_args(self, command: list[str]) -> list[str]:
         executable = Path(command[0]).name if command else ""
