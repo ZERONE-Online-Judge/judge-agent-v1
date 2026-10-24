@@ -32,8 +32,19 @@ _sigxfsz = getattr(signal, "SIGXFSZ", None)
 _output_limit_returncodes = {125}
 FULL_VERIFICATION = "editor-judge-full-v1"
 ZOJ_FULL_VERIFICATION = "zoj-judge-full-v1"
+REFERENCE_OUTPUT = "editor-reference-output-v1"
+MAX_REFERENCE_OUTPUT_BYTES = 128 * 1024 * 1024
 MAX_CASE_OUTPUT_BYTES = 256 * 1024
 MAX_RUN_OUTPUT_BYTES = 16 * 1024 * 1024
+
+
+def reference_output(job):
+    return (job.get("reference_output") is True
+            and job.get("collect_all_results") is True
+            and job.get("submission", {}).get("submission_kind") == "editor_verification"
+            and len(job.get("testcases", [])) == 1)
+
+
 if _sigxfsz is not None:
     _output_limit_returncodes.add(-int(_sigxfsz))
 
@@ -286,14 +297,15 @@ class JudgeExecutor:
         progress: ProgressCallback | None = None,
         case_progress=None,
     ) -> ExecutionResult:
-        checker = self._prepare_checker(job_dir, job.get("package_files") or [])
+        reference = reference_output(job)
+        checker = None if reference else self._prepare_checker(job_dir, job.get("package_files") or [])
         if isinstance(checker, ExecutionResult):
             return checker
         total = len(testcases)
         collect_all = job.get("collect_all_results") is True and job.get("submission", {}).get("submission_kind") in {"editor_verification", "operator_test"}
         observations = []
         first_failure = None
-        output_budget = MAX_RUN_OUTPUT_BYTES
+        output_budget = MAX_REFERENCE_OUTPUT_BYTES if reference else MAX_RUN_OUTPUT_BYTES
         cases_by_order = {int(testcase["display_order"]): testcase for testcase in testcases}
         def observe(result):
             nonlocal first_failure, output_budget
@@ -470,6 +482,7 @@ class JudgeExecutor:
                 # A per-case copy keeps concurrent contest output limits intact.
                 runner = copy.copy(self)
                 runner.output_limit_bytes = 128 * 1024**2
+                runner.output_capture_limit_bytes = MAX_REFERENCE_OUTPUT_BYTES if reference_output(job) else MAX_CASE_OUTPUT_BYTES
             completed = runner._run_command(
                 case_command,
                 case_dir,
@@ -493,7 +506,7 @@ class JudgeExecutor:
         if job.get("collect_all_results") is True and job.get("submission", {}).get("submission_kind") in {"editor_verification", "operator_test"}:
             output = getattr(completed, "stdout_prefix", None)
             if output is None:
-                output = (completed.stdout or "").encode("utf-8")[:MAX_CASE_OUTPUT_BYTES]
+                output = (completed.stdout or "").encode("utf-8")[:MAX_REFERENCE_OUTPUT_BYTES if reference_output(job) else MAX_CASE_OUTPUT_BYTES]
             testcase["_editor_output"] = output
             size = getattr(completed, "stdout_size", None)
             testcase["_editor_output_total_bytes"] = size if size is not None else len((completed.stdout or "").encode("utf-8"))
@@ -506,6 +519,8 @@ class JudgeExecutor:
             return TestcaseRunResult(order, self._execution_result("memory_limit_exceeded", f"memory limit exceeded on testcase {order}", order, runtime_ms=runtime_ms, memory_kb=memory_kb))
         if completed.returncode != 0:
             return TestcaseRunResult(order, self._execution_result("runtime_error", (completed.stderr or completed.stdout)[-4000:], order, runtime_ms=runtime_ms, memory_kb=memory_kb))
+        if reference_output(job):
+            return TestcaseRunResult(order, self._execution_result("accepted", None, runtime_ms=runtime_ms, memory_kb=memory_kb))
         case_label = self._testcase_label(testcase)
         if checker:
             checker_result = self._run_checker(
@@ -1206,7 +1221,7 @@ class JudgeExecutor:
         stderr = self._read_limited_text(stderr_file) or fallback_stderr
         completed = subprocess.CompletedProcess(command, returncode, stdout, stderr)
         stdout_file.seek(0)
-        prefix = stdout_file.read(MAX_CASE_OUTPUT_BYTES)
+        prefix = stdout_file.read(getattr(self, "output_capture_limit_bytes", MAX_CASE_OUTPUT_BYTES))
         completed.stdout_prefix = prefix.encode("utf-8") if isinstance(prefix, str) else prefix
         completed.stdout_size = self._file_size(stdout_file)
         wall_runtime_ms = max(0, int((time.monotonic() - started_at) * 1000)) if started_at is not None else None

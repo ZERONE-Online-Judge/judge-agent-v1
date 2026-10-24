@@ -12,7 +12,7 @@ class Settings:
     cpu_pinning: bool = os.getenv("JUDGE_CPU_PINNING", "true").lower() == "true"
     testcase_parallelism: int = int(os.getenv("JUDGE_TESTCASE_PARALLELISM", "4"))
     work_root: Path = Path(os.getenv("JUDGE_WORK_ROOT", "/tmp/zerone-judge"))
-    agent_version: str = "0.3.0"
+    agent_version: str = "0.3.1"
     editor_runtime_image: str = os.getenv("JUDGE_EDITOR_RUNTIME_IMAGE", "zoj-editor-runtime:agent-v1")
     editor_renderer_image: str = os.getenv("JUDGE_EDITOR_RENDERER_IMAGE", "zoj-editor-renderer:agent-v1")
     poll_interval_seconds: float = float(os.getenv("JUDGE_POLL_INTERVAL_SECONDS", "1"))
