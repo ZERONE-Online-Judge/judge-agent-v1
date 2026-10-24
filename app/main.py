@@ -7,7 +7,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from threading import Event, Thread
 
 from app.backend_client import BackendClient
-from app.executor import FULL_VERIFICATION, ZOJ_FULL_VERIFICATION, JudgeExecutor
+from app.executor import FULL_VERIFICATION, ZOJ_FULL_VERIFICATION, REFERENCE_OUTPUT, JudgeExecutor
 from app.editor_executor import EditorExecutor, cleanup_editor_containers
 from app.editor_protocol import PROTOCOL
 from app.log_forwarder import LogForwarder
@@ -157,7 +157,7 @@ def main() -> None:
     execution_revision = hashlib.sha256(((editor_executor.revision or "") + runtime_fingerprint()).encode()).hexdigest()
     while True:
         try:
-            node_id = client.register_node([*editor_executor.capabilities, FULL_VERIFICATION, ZOJ_FULL_VERIFICATION, "judge-icpc-languages-v1", "judge-zoj-runtime-v1"],
+            node_id = client.register_node([*editor_executor.capabilities, FULL_VERIFICATION, ZOJ_FULL_VERIFICATION, REFERENCE_OUTPUT, "judge-icpc-languages-v1", "judge-zoj-runtime-v1"],
                                            execution_revision)
             break
         except RuntimeError as error:
