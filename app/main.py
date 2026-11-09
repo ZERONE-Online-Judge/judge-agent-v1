@@ -6,7 +6,7 @@ import traceback
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from threading import Event, Thread
 
-from app.backend_client import BackendClient
+from app.backend_client import BackendClient, BackendError
 from app.executor import FULL_VERIFICATION, ZOJ_FULL_VERIFICATION, REFERENCE_OUTPUT, JudgeExecutor
 from app.editor_executor import EditorExecutor, cleanup_editor_containers
 from app.editor_protocol import PROTOCOL
@@ -40,6 +40,19 @@ def cleanup_isolate_boxes() -> None:
 
 def judge_one(client: BackendClient, executor: JudgeExecutor, job: dict, editor_executor=None) -> None:
     stop_keepalive = Event()
+    lease_lost = Event()
+
+    def check_lease() -> None:
+        if lease_lost.is_set():
+            raise BackendError(409, "lease_conflict", "채점 작업의 소유권이 만료되었거나 다른 채점기로 이동했습니다.")
+
+    def handle_backend_error(error: RuntimeError) -> None:
+        if isinstance(error, BackendError):
+            if error.lease_lost:
+                lease_lost.set()
+                stop_keepalive.set()
+            if error.permanent:
+                raise error
 
     def keepalive() -> None:
         interval = 3.0 if job.get("task_type") == PROTOCOL else 30.0
@@ -51,10 +64,12 @@ def judge_one(client: BackendClient, executor: JudgeExecutor, job: dict, editor_
                 )
             except RuntimeError as error:
                 print(f"[judge-agent] lease renew failed for {job['judge_job_id']}: {error}")
-                if job.get("task_type") == PROTOCOL and any(f"http {code}:" in str(error) for code in [403, 404, 409]):
+                if isinstance(error, BackendError) and error.lease_lost:
+                    lease_lost.set()
                     stop_keepalive.set()
 
     def report_progress(status: str, progress_current: int | None, progress_total: int | None) -> None:
+        check_lease()
         try:
             client.report_progress(
                 job_id=job["judge_job_id"],
@@ -65,19 +80,23 @@ def judge_one(client: BackendClient, executor: JudgeExecutor, job: dict, editor_
             )
         except RuntimeError as error:
             print(f"[judge-agent] progress report failed for {job['judge_job_id']}: {error}")
+            handle_backend_error(error)
 
     keepalive_thread = Thread(target=keepalive, daemon=True)
     keepalive_thread.start()
     try:
+        check_lease()
         if job.get("task_type") == PROTOCOL:
             if not editor_executor:
                 raise RuntimeError("Editor executor is missing")
             value = editor_executor.execute(job, cancelled=stop_keepalive.is_set)
             for attempt in range(3):
+                check_lease()
                 try:
                     client.report_editor_result(job["judge_job_id"], job["lease_token"], result=value)
                     break
-                except RuntimeError:
+                except RuntimeError as error:
+                    handle_backend_error(error)
                     if attempt == 2:
                         raise
                     time.sleep(1)
@@ -87,6 +106,7 @@ def judge_one(client: BackendClient, executor: JudgeExecutor, job: dict, editor_
         case_last_sent = time.monotonic()
         def report_case(value, current, total):
             nonlocal case_last_sent
+            check_lease()
             pending_cases.append(value)
             if current != 1 and current != total and len(pending_cases) < 16 and time.monotonic() - case_last_sent < .5:
                 return
@@ -97,6 +117,7 @@ def judge_one(client: BackendClient, executor: JudgeExecutor, job: dict, editor_
                 case_last_sent = time.monotonic()
             except RuntimeError as error:
                 print(f"[judge-agent] testcase progress report failed: {error}")
+                handle_backend_error(error)
         result = executor.judge(job, progress=report_progress, case_progress=report_case)
         report = dict(
             job_id=job["judge_job_id"],
@@ -111,17 +132,23 @@ def judge_one(client: BackendClient, executor: JudgeExecutor, job: dict, editor_
         )
         attempts = 3 if result.testcase_results is not None else 1
         for attempt in range(attempts):
+            check_lease()
             try:
                 client.report_result(**report)
                 break
-            except RuntimeError:
+            except RuntimeError as error:
+                handle_backend_error(error)
                 if attempt == attempts - 1:
                     raise
                 time.sleep(1)
         print(f"[judge-agent] reported {job['judge_job_id']} status={result.status}")
     except Exception as error:
-        message = "".join(traceback.format_exception_only(type(error), error)).strip()
+        if lease_lost.is_set() or (isinstance(error, BackendError) and error.lease_lost):
+            print(f"[judge-agent] stopped {job['judge_job_id']}: 채점 작업의 소유권을 잃어 결과 보고를 중단했습니다. {error}")
+            return
+        message = str(error) if isinstance(error, BackendError) else "".join(traceback.format_exception_only(type(error), error)).strip()
         try:
+            check_lease()
             if job.get("task_type") == PROTOCOL:
                 client.report_editor_result(job["judge_job_id"], job["lease_token"], error=message[-4000:])
                 print(f"[judge-agent] reported Editor task {job['judge_job_id']} failed")

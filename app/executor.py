@@ -128,6 +128,12 @@ class JudgeExecutor:
             f"testcases={len(job.get('testcases') or [])}",
             flush=True,
         )
+        # Bare local execution remains supported, but an assigned test-based
+        # job must never turn an empty suite into a successful stdin run.
+        if not job.get("testcases") and (
+            "testcases" in job or job.get("bundle_url") or submission.get("submission_kind")
+        ):
+            return ExecutionResult("system_error", "채점할 활성 테스트가 없습니다. 테스트 케이스를 등록하고 활성화한 뒤 다시 요청해 주세요.")
         job_dir = self.work_root / job["judge_job_id"]
         if job_dir.exists():
             shutil.rmtree(job_dir)
@@ -185,7 +191,7 @@ class JudgeExecutor:
                 job["package_files"] = payload["package_files"]
         except Exception as error:
             # fall back to per-object flow
-            print(f"[judge-agent] bundle hydrate skipped: {error}", flush=True)
+            print(f"[judge-agent] bundle hydrate skipped: {type(error).__name__}", flush=True)
             return
 
     def _prepare_command(self, job_dir: Path, language: str, source_code: str) -> list[str] | ExecutionResult:

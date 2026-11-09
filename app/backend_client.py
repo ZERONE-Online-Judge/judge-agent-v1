@@ -2,12 +2,69 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import socket
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from app.settings import settings
+
+
+class BackendError(RuntimeError):
+    """A safe backend failure; response bodies and credentials are not retained."""
+
+    def __init__(self, status: int | None, code: str, message: str, request_id: str | None = None):
+        self.status = status
+        self.code = code
+        self.message = message
+        self.request_id = request_id
+        super().__init__(message + (f" (요청 ID: {request_id})" if request_id else ""))
+
+    @property
+    def lease_lost(self) -> bool:
+        return self.status in {403, 404} or (self.status == 409 and self.code == "lease_conflict")
+
+    @property
+    def permanent(self) -> bool:
+        return self.status is not None and 400 <= self.status < 500 and self.status not in {408, 425, 429}
+
+
+def _http_failure(error: HTTPError, lease_token: str | None = None) -> BackendError:
+    try:
+        value = json.loads(error.read(65536).decode("utf-8", "replace"))
+    except (ValueError, OSError):
+        value = {}
+    details = value.get("error", {}) if isinstance(value, dict) else {}
+    if not isinstance(details, dict):
+        details = {}
+    secrets = [settings.node_secret, lease_token]
+    secrets += [base64.urlsafe_b64encode(secret.encode()).decode() for secret in secrets if secret]
+    def identifier(value):
+        if (isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", value)
+                and not any(secret and secret in value for secret in secrets)):
+            return value
+        return None
+    code = identifier(details.get("code")) or "backend_request_failed"
+    request_id = identifier(details.get("request_id"))
+    messages = {
+        "testcases_not_ready": "채점할 활성 테스트가 없습니다. 테스트 케이스를 등록하고 활성화한 뒤 다시 요청해 주세요.",
+        "testcase_results_invalid": "채점 결과 증거 검증에 실패했습니다. 관리자에게 문의해 주세요.",
+        "lease_conflict": "채점 작업의 소유권이 만료되었거나 다른 채점기로 이동했습니다.",
+    }
+    if error.code in {403, 404}:
+        message = "채점 작업에 접근할 수 없거나 작업이 더 이상 존재하지 않습니다."
+    elif code in messages:
+        message = messages[code]
+    elif error.code >= 500 or error.code in {408, 425, 429}:
+        message = "채점 서버가 일시적으로 요청을 처리하지 못했습니다."
+    else:
+        message = "채점 서버가 요청을 거절했습니다. 관리자에게 문의해 주세요."
+    return BackendError(error.code, code, message, request_id)
+
+
+def _unavailable() -> BackendError:
+    return BackendError(None, "backend_unavailable", "채점 서버에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.")
 
 
 class BackendClient:
@@ -33,10 +90,9 @@ class BackendClient:
             with urlopen(request, timeout=timeout_seconds) as response:
                 return json.loads(response.read().decode("utf-8"))
         except HTTPError as error:
-            detail = error.read().decode("utf-8")
-            raise RuntimeError(f"backend http {error.code}: {detail}") from error
+            raise _http_failure(error, (payload or {}).get("lease_token")) from None
         except (URLError, TimeoutError, socket.timeout) as error:
-            raise RuntimeError(f"backend unavailable: {error}") from error
+            raise _unavailable() from None
 
     def register_node(self, execution_capabilities=None, execution_revision=None) -> str:
         response = self._request(
@@ -159,6 +215,6 @@ class BackendClient:
             with urlopen(request, timeout=120) as response:
                 return json.loads(response.read())
         except HTTPError as exc:
-            raise RuntimeError(f"backend http {exc.code}: " + exc.read().decode("utf-8", "replace")[:4000]) from exc
+            raise _http_failure(exc, lease_token) from None
         except (URLError, TimeoutError, socket.timeout) as exc:
-            raise RuntimeError(f"backend unavailable: {exc}") from exc
+            raise _unavailable() from None

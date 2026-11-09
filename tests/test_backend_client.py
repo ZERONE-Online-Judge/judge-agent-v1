@@ -1,9 +1,10 @@
 import json
-from urllib.error import URLError
+from io import BytesIO
+from urllib.error import HTTPError, URLError
 
 import pytest
 
-from app.backend_client import BackendClient
+from app.backend_client import BackendClient, BackendError
 
 
 class _FakeResponse:
@@ -44,7 +45,7 @@ def test_request_wraps_timeout_as_runtime_error(monkeypatch: pytest.MonkeyPatch)
 
     client = BackendClient()
 
-    with pytest.raises(RuntimeError, match="backend unavailable"):
+    with pytest.raises(BackendError, match="채점 서버에 연결할 수 없습니다"):
         client.claim("node-1", 1)
 
 
@@ -56,7 +57,7 @@ def test_request_wraps_url_error_as_runtime_error(monkeypatch: pytest.MonkeyPatc
 
     client = BackendClient()
 
-    with pytest.raises(RuntimeError, match="backend unavailable"):
+    with pytest.raises(BackendError, match="채점 서버에 연결할 수 없습니다"):
         client.register_node()
 
 
@@ -87,3 +88,43 @@ def test_full_verification_case_batches_and_final_outputs_use_bounded_upload_tim
     assert all(body['testcase_results'] == cases and timeout == 120 for _, body, timeout in requests)
     client.report_progress('contest-run', 'lease', 'judging', 1, 2)
     assert 'testcase_results' not in requests[-1][1] and requests[-1][2] == 10
+
+
+@pytest.mark.parametrize('editor', [False, True])
+def test_structured_errors_keep_safe_diagnostics_without_raw_response_or_credentials(monkeypatch, editor):
+    from app.settings import settings
+    body = {'error': {'code': 'testcase_results_invalid', 'request_id': 'request-123',
+                      'message': 'raw ' + settings.node_secret + ' secret-lease',
+                      'details': {'source_code': 'PRIVATE_SOURCE', 'node_secret': settings.node_secret}}}
+    def fail(*args, **kwargs):
+        raise HTTPError('https://backend/result', 422, 'Unprocessable', {}, BytesIO(json.dumps(body).encode()))
+    monkeypatch.setattr('app.backend_client.urlopen', fail)
+    with pytest.raises(BackendError) as caught:
+        if editor:
+            BackendClient().report_editor_result('task', 'secret-lease', result={'status': 'ok'})
+        else:
+            BackendClient().report_result('job', 'secret-lease', 'accepted', None, None, None)
+    error = caught.value
+    assert (error.status, error.code, error.request_id) == (422, 'testcase_results_invalid', 'request-123')
+    assert error.permanent and not error.lease_lost
+    assert '증거 검증에 실패' in error.message and 'request-123' in str(error)
+    assert all(secret not in str(vars(error)) for secret in [settings.node_secret, 'secret-lease', 'PRIVATE_SOURCE'])
+
+
+@pytest.mark.parametrize('body', [b'<html>PRIVATE_SOURCE secret-lease</html>', b'not json', b'[]', b'{"error": "PRIVATE_SOURCE"}'])
+def test_unstructured_http_errors_do_not_leak_the_response(monkeypatch, body):
+    monkeypatch.setattr('app.backend_client.urlopen', lambda *a, **kw: (_ for _ in ()).throw(
+        HTTPError('https://backend/result', 503, 'Unavailable', {}, BytesIO(body))))
+    with pytest.raises(BackendError) as caught:
+        BackendClient().report_result('job', 'secret-lease', 'accepted', None, None, None)
+    assert caught.value.status == 503 and not caught.value.permanent
+    assert 'PRIVATE_SOURCE' not in str(caught.value) and 'secret-lease' not in str(caught.value)
+
+
+def test_transport_failure_does_not_echo_urls_or_tokens(monkeypatch):
+    monkeypatch.setattr('app.backend_client.urlopen', lambda *a, **kw: (_ for _ in ()).throw(
+        URLError('https://backend/?token=PRIVATE_TOKEN')))
+    with pytest.raises(BackendError) as caught:
+        BackendClient().claim('node', 1)
+    assert caught.value.code == 'backend_unavailable' and not caught.value.permanent
+    assert 'PRIVATE_TOKEN' not in str(caught.value)
