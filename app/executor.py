@@ -322,7 +322,11 @@ class JudgeExecutor:
         cases_by_order = {int(testcase["display_order"]): testcase for testcase in testcases}
         def observe(result):
             nonlocal first_failure, output_budget
-            if first_failure is None and result.result.status != "accepted":
+            if result.result.status != "accepted" and (
+                first_failure is None
+                or (job.get("scoring_mode") == "ioi" and result.result.status == "system_error"
+                    and first_failure.status != "system_error")
+            ):
                 first_failure = result.result
             value = {"index": result.order, "final_status": result.result.status,
                      "runtime_ms": result.result.runtime_ms, "memory_kb": result.result.memory_kb,

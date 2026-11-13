@@ -27,7 +27,7 @@ def test_ioi_assignment_collects_every_independent_subtask(tmp_path, monkeypatch
         case_progress=lambda value, current, total: progress.append((value, current, total)))
     assert sorted(calls) == list(range(1, 7))
     assert [case['final_status'] for case in result.testcase_results] == outcomes
-    assert result.status == 'wrong_answer' and result.failed_testcase_order == 1
+    assert result.status == 'system_error' and result.failed_testcase_order == 5
     assert result.runtime_ms == 6 and result.memory_kb == 60
     assert [event[1:] for event in progress] == [(i, 6) for i in range(1, 7)]
     assert all('score' not in case and 'output_base64' not in case for case in result.testcase_results)
@@ -89,3 +89,23 @@ def test_real_ioi_checker_failure_is_evidence_of_a_judge_error_not_zero_points(t
                        'input_storage_key': 'in', 'output_storage_key': 'out'} for i in range(1, 3)]})
     assert result.status == 'system_error'
     assert [row['final_status'] for row in result.testcase_results] == ['system_error', 'accepted']
+
+
+@pytest.mark.parametrize('mode,expected,failed', [('ioi', 'system_error', 2), ('icpc', 'wrong_answer', 1)])
+@pytest.mark.parametrize('parallelism', [1, 4])
+def test_ioi_judge_error_after_a_wrong_answer_preserves_error_for_retry(tmp_path, monkeypatch, mode, expected, failed, parallelism):
+    executor = JudgeExecutor(tmp_path, sandbox_mode='local', testcase_parallelism=parallelism)
+    monkeypatch.setattr(executor, '_prepare_checker', lambda *_: None)
+    outcomes = [('wrong_answer', 'ordinary wrong answer'), ('system_error', 'checker crashed'),
+                ('accepted', None)]
+    def run(command, directory, job, test, *args):
+        index = test['display_order']
+        status, message = outcomes[index - 1]
+        return Case(index, ExecutionResult(status, message, index if status != 'accepted' else None))
+    monkeypatch.setattr(executor, '_run_single_testcase', run)
+    result = executor._run_testcases(['code'], tmp_path,
+        {'scoring_mode': mode, 'collect_all_results': True, 'submission': {'submission_kind': 'operator_test'}},
+        [{'display_order': i} for i in range(1, 4)], 'sha')
+    assert result.status == expected and result.failed_testcase_order == failed
+    assert result.message == outcomes[failed - 1][1]
+    assert len(result.testcase_results) == 3
