@@ -32,6 +32,7 @@ _sigxfsz = getattr(signal, "SIGXFSZ", None)
 _output_limit_returncodes = {125}
 FULL_VERIFICATION = "editor-judge-full-v1"
 ZOJ_FULL_VERIFICATION = "zoj-judge-full-v1"
+ZOJ_SUBTASKS = "zoj-judge-subtasks-v1"
 REFERENCE_OUTPUT = "editor-reference-output-v1"
 MAX_REFERENCE_OUTPUT_BYTES = 128 * 1024 * 1024
 MAX_CASE_OUTPUT_BYTES = 256 * 1024
@@ -308,7 +309,13 @@ class JudgeExecutor:
         if isinstance(checker, ExecutionResult):
             return checker
         total = len(testcases)
-        collect_all = job.get("collect_all_results") is True and job.get("submission", {}).get("submission_kind") in {"editor_verification", "operator_test"}
+        # scoring_mode is supplied by the authenticated assignment endpoint,
+        # never by a participant's source or its archive. Independent subtasks
+        # must still run after a previous case fails.
+        collect_all = job.get("collect_all_results") is True and (
+            job.get("scoring_mode") == "ioi"
+            or job.get("submission", {}).get("submission_kind") in {"editor_verification", "operator_test"}
+        )
         observations = []
         first_failure = None
         output_budget = MAX_REFERENCE_OUTPUT_BYTES if reference else MAX_RUN_OUTPUT_BYTES
@@ -539,6 +546,7 @@ class JudgeExecutor:
                 case_label,
                 source_hash,
                 sandbox_container_id=None,
+                strict_errors=job.get("scoring_mode") == "ioi",
             )
             if checker_result:
                 return TestcaseRunResult(order, self._execution_result(checker_result.status, checker_result.message, checker_result.failed_testcase_order, runtime_ms=runtime_ms, memory_kb=memory_kb))
@@ -701,6 +709,7 @@ class JudgeExecutor:
         case_label: str,
         source_hash: str | None = None,
         sandbox_container_id: str | None = None,
+        strict_errors: bool = False,
     ) -> ExecutionResult | None:
         case_dir = checker.cwd / "checker-cases" / f"{order:03d}"
         case_dir.mkdir(parents=True, exist_ok=True)
@@ -722,6 +731,13 @@ class JudgeExecutor:
         if completed.returncode == 0:
             return None
         detail = (completed.stderr or completed.stdout or f"checker rejected testcase {order}")[-4000:]
+        if strict_errors and completed.returncode not in {1, 2}:
+            guidance = " 부분 점수 Checker 대신 테스트·서브태스크의 고정 배점을 사용하세요." if completed.returncode == 7 else ""
+            return ExecutionResult(
+                status="system_error",
+                message=f"checker failed on testcase {order} (exit {completed.returncode}):{guidance} {detail}",
+                failed_testcase_order=order,
+            )
         return ExecutionResult(
             status="wrong_answer",
             message=self._build_wrong_answer_message(order, case_label, detail, input_text, expected, actual, source_hash=source_hash),
