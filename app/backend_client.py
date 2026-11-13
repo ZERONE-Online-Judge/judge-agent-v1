@@ -169,6 +169,8 @@ class BackendClient:
         progress_total: int | None,
         testcase_result: dict | None = None,
         testcase_results: list[dict] | None = None,
+        *,
+        progress_phase: str | None = None,
     ) -> None:
         self._request(
             "POST",
@@ -179,6 +181,7 @@ class BackendClient:
                 "status": status,
                 "progress_current": progress_current,
                 "progress_total": progress_total,
+                "progress_phase": progress_phase,
                 **({"testcase_result": testcase_result} if testcase_result is not None else {}),
                 **({"testcase_results": testcase_results} if testcase_results is not None else {}),
             },

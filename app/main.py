@@ -68,7 +68,8 @@ def judge_one(client: BackendClient, executor: JudgeExecutor, job: dict, editor_
                     lease_lost.set()
                     stop_keepalive.set()
 
-    def report_progress(status: str, progress_current: int | None, progress_total: int | None) -> None:
+    def report_progress(status: str, progress_current: int | None, progress_total: int | None,
+                        progress_phase: str | None = None) -> None:
         check_lease()
         try:
             client.report_progress(
@@ -77,6 +78,7 @@ def judge_one(client: BackendClient, executor: JudgeExecutor, job: dict, editor_
                 status=status,
                 progress_current=progress_current,
                 progress_total=progress_total,
+                progress_phase=progress_phase,
             )
         except RuntimeError as error:
             print(f"[judge-agent] progress report failed for {job['judge_job_id']}: {error}")

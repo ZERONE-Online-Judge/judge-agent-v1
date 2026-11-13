@@ -11,6 +11,22 @@ JOB = {'judge_job_id': 'job', 'lease_token': 'fixture-lease'}
 CASES = [{'index': 1, 'final_status': 'accepted', 'output_base64': 'NQo='}]
 
 
+def test_reconfirmation_phase_does_not_create_an_extra_case_result():
+    client, executor = Mock(), Mock()
+    def run(job, progress, case_progress):
+        progress('judging', 0, 1, progress_phase='tle_confirmation')
+        progress('judging', 0, 1)
+        case_progress(CASES[0], 1, 1)
+        return ExecutionResult('accepted', testcase_results=CASES)
+    executor.judge.side_effect = run
+    judge_one(client, executor, JOB)
+    updates = client.report_progress.call_args_list
+    assert updates[0].kwargs['progress_phase'] == 'tle_confirmation'
+    assert updates[1].kwargs['progress_phase'] is None
+    assert client.report_result.call_args.kwargs['testcase_results'] == CASES
+    assert updates[2].kwargs['testcase_results'] == CASES
+
+
 def failure(status=422, code='testcase_results_invalid'):
     return BackendError(status, code, '채점 결과 증거 검증에 실패했습니다.', 'request-fixture')
 

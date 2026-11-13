@@ -37,6 +37,19 @@ def test_claim_uses_timeout_longer_than_long_poll(monkeypatch: pytest.MonkeyPatc
     assert captured["timeout"] == 35.0
 
 
+def test_progress_phase_is_forwarded_and_explicitly_cleared(monkeypatch):
+    payloads = []
+    def respond(request, timeout):
+        payloads.append(json.loads(request.data))
+        return _FakeResponse({'data': {'accepted': True}})
+    monkeypatch.setattr('app.backend_client.urlopen', respond)
+    client = BackendClient()
+    client.report_progress('run', 'lease', 'judging', 3, 10, progress_phase='tle_confirmation')
+    client.report_progress('run', 'lease', 'judging', 3, 10)
+    assert [row['progress_phase'] for row in payloads] == ['tle_confirmation', None]
+    assert [(row['progress_current'], row['progress_total']) for row in payloads] == [(3, 10), (3, 10)]
+
+
 def test_request_wraps_timeout_as_runtime_error(monkeypatch: pytest.MonkeyPatch):
     def fake_urlopen(request, timeout):
         raise TimeoutError("read timed out")

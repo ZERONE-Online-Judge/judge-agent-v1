@@ -3,7 +3,7 @@ import subprocess
 import time
 import pytest
 
-from app.executor import ExecutionResult, JudgeExecutor, TestcaseRunResult as _TestcaseRunResult
+from app.executor import ExecutionResult, ExecutionTiming, JudgeExecutor, TestcaseRunResult as _TestcaseRunResult
 
 
 def test_python_submission_accepts(tmp_path: Path):
@@ -312,7 +312,7 @@ def test_parallel_tle_is_retried_serially_and_can_be_accepted(tmp_path: Path, mo
     assert calls == {1: 1, 2: 2, 3: 1}
 
 
-def test_parallel_tle_is_final_only_after_serial_confirmation(tmp_path: Path, monkeypatch):
+def test_parallel_wall_tle_is_final_only_after_serial_confirmation(tmp_path: Path, monkeypatch):
     executor = JudgeExecutor(tmp_path, sandbox_mode="isolate", testcase_parallelism=2)
     calls: dict[int, int] = {}
 
@@ -325,6 +325,7 @@ def test_parallel_tle_is_final_only_after_serial_confirmation(tmp_path: Path, mo
             return _TestcaseRunResult(
                 order,
                 ExecutionResult("time_limit_exceeded", failed_testcase_order=order, runtime_ms=900),
+                timing=ExecutionTiming(.1, 3.0, 1.0, 3.0, "wall", status="TO"),
             )
         return _TestcaseRunResult(order, ExecutionResult("accepted", runtime_ms=10))
 
@@ -372,7 +373,8 @@ def test_tle_confirmation_stops_at_first_ordered_failure(
         return _TestcaseRunResult(order, ExecutionResult(
             status, failed_testcase_order=order if status != "accepted" else None,
             runtime_ms=order * 10,
-        ))
+        ), timing=ExecutionTiming(.1, 3.0, 1.0, 3.0, "wall", status="TO")
+            if status == "time_limit_exceeded" else None)
 
     monkeypatch.setattr(executor, "_run_single_testcase", fake_run)
     result = executor._run_testcases(

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 import base64
 import copy
@@ -9,6 +9,7 @@ import gzip
 import fcntl
 import itertools
 import json
+import math
 import os
 import re
 import signal
@@ -83,12 +84,26 @@ class PreparedChecker:
 
 
 @dataclass(frozen=True)
+class ExecutionTiming:
+    cpu_seconds: float | None = None
+    wall_seconds: float | None = None
+    cpu_limit_seconds: float | None = None
+    wall_limit_seconds: float | None = None
+    timeout_origin: str | None = None
+    source: str = "isolate"
+    status: str | None = None
+
+
+@dataclass(frozen=True)
 class TestcaseRunResult:
     order: int
     result: ExecutionResult
+    timing: ExecutionTiming | None = None
+    attempts: int = 1
+    retry_reason: str | None = None
 
 
-ProgressCallback = Callable[[str, int | None, int | None], None]
+ProgressCallback = Callable[..., None]
 
 
 class JudgeExecutor:
@@ -236,6 +251,8 @@ class JudgeExecutor:
         (job_dir / filename).write_text(source_code, encoding="utf-8")
         compiled = self._run_compiler(compile_command, job_dir)
 
+        if getattr(compiled, "execution_error", None):
+            return ExecutionResult("system_error", compiled.execution_error)
         if compiled.returncode != 0:
             return ExecutionResult(
                 status="compile_error",
@@ -258,6 +275,8 @@ class JudgeExecutor:
             ],
             job_dir,
         )
+        if getattr(compiled, "execution_error", None):
+            return ExecutionResult("system_error", compiled.execution_error)
         if compiled.returncode != 0:
             return ExecutionResult(
                 status="compile_error",
@@ -284,6 +303,8 @@ class JudgeExecutor:
             stdin="",
             memory_limit_mb=self._problem_memory_limit_mb(job),
         )
+        if getattr(completed, "execution_error", None):
+            return self._execution_result("system_error", completed.execution_error, completed=completed)
         if completed.returncode == 0:
             return self._execution_result("accepted", None, completed=completed)
         if completed.returncode == 124:
@@ -331,6 +352,18 @@ class JudgeExecutor:
             value = {"index": result.order, "final_status": result.result.status,
                      "runtime_ms": result.result.runtime_ms, "memory_kb": result.result.memory_kb,
                      "judge_message": (result.result.message or "")[-2048:]}
+            if result.attempts > 1:
+                value.update(attempts=result.attempts, retry_reason=result.retry_reason)
+            if result.timing is not None:
+                value.update(
+                    timeout_origin=result.timing.timeout_origin,
+                    cpu_runtime_ms=self._seconds_to_ms(result.timing.cpu_seconds),
+                    wall_runtime_ms=self._seconds_to_ms(result.timing.wall_seconds),
+                    cpu_limit_ms=self._seconds_to_ms(result.timing.cpu_limit_seconds),
+                    wall_limit_ms=self._seconds_to_ms(result.timing.wall_limit_seconds),
+                    attempts=result.attempts,
+                    retry_reason=result.retry_reason,
+                )
             testcase = cases_by_order[result.order]
             output = testcase.pop("_editor_output", None)
             total_bytes = testcase.pop("_editor_output_total_bytes", None)
@@ -359,6 +392,40 @@ class JudgeExecutor:
         )
         if progress:
             progress("judging", 0, total)
+
+        def confirm(result, testcase, finalized_count):
+            if worker_count == 1 and self.sandbox_mode != "isolate":
+                return result
+            if not self._needs_timeout_confirmation(result):
+                return result
+            reason = result.timing.timeout_origin if result.timing else "unknown"
+            reason = reason or "unknown"
+            print(f"[judge-agent] job={job_id} testcase={result.order} "
+                  f"stage=tle-confirmation:start mode=serial reason={reason}", flush=True)
+            if progress:
+                progress("judging", finalized_count, total, progress_phase="tle_confirmation")
+            testcase.pop("_editor_output", None)
+            testcase.pop("_editor_output_total_bytes", None)
+            self._remove_tree(job_dir / "cases" / f"{result.order:03d}")
+            retried = self._run_single_testcase(
+                command, job_dir, job, testcase, checker, source_hash, sandbox_container_id,
+            )
+            if (self.sandbox_mode == "isolate"
+                    and retried.result.status == "time_limit_exceeded"
+                    and not self._has_timeout_evidence(retried, "cpu")
+                    and not self._has_timeout_evidence(retried, "wall")):
+                retried = replace(retried, result=replace(
+                    retried.result, status="system_error",
+                    message="실행 시간 측정 정보를 재확인하지 못했습니다. 채점 환경을 확인해 주세요.",
+                ))
+            retried = replace(retried, attempts=2, retry_reason=reason)
+            print(f"[judge-agent] job={job_id} testcase={result.order} "
+                  f"stage=tle-confirmation:done status={retried.result.status} "
+                  f"runtime_ms={retried.result.runtime_ms}", flush=True)
+            if progress:
+                progress("judging", finalized_count, total)
+            return retried
+
         if worker_count == 1:
             for index, testcase in enumerate(testcases, start=1):
                 result = self._run_single_testcase(
@@ -370,6 +437,7 @@ class JudgeExecutor:
                     source_hash,
                     sandbox_container_id,
                 )
+                result = confirm(result, testcase, index - 1)
                 max_runtime_ms = self._max_metric(max_runtime_ms, result.result.runtime_ms)
                 max_memory_kb = self._max_metric(max_memory_kb, result.result.memory_kb)
                 if collect_all:
@@ -412,41 +480,15 @@ class JudgeExecutor:
                 for future in as_completed(futures):
                     result = future.result()
                     batch_results.append(result)
-                    completed_count += 1
-                    if progress and not collect_all:
-                        progress("judging", completed_count, total)
                     print(
                         f"[judge-agent] job={job_id} testcase={result.order} status={result.result.status} "
-                        f"runtime_ms={result.result.runtime_ms} memory_kb={result.result.memory_kb} done={completed_count}/{total}",
+                        f"runtime_ms={result.result.runtime_ms} memory_kb={result.result.memory_kb} initial_batch_complete=true",
                         flush=True,
                     )
 
                 testcases_by_order = {int(testcase["display_order"]): testcase for testcase in batch}
                 for result in sorted(batch_results, key=lambda item: item.order):
-                    if result.result.status == "time_limit_exceeded":
-                        testcase = testcases_by_order[result.order]
-                        print(
-                            f"[judge-agent] job={job_id} testcase={result.order} "
-                            "stage=tle-confirmation:start mode=serial",
-                            flush=True,
-                        )
-                        case_dir = job_dir / "cases" / f"{result.order:03d}"
-                        self._remove_tree(case_dir)
-                        result = self._run_single_testcase(
-                            command,
-                            job_dir,
-                            job,
-                            testcase,
-                            checker,
-                            source_hash,
-                            sandbox_container_id,
-                        )
-                        print(
-                            f"[judge-agent] job={job_id} testcase={result.order} "
-                            f"stage=tle-confirmation:done status={result.result.status} "
-                            f"runtime_ms={result.result.runtime_ms}",
-                            flush=True,
-                        )
+                    result = confirm(result, testcases_by_order[result.order], completed_count)
                     max_runtime_ms = self._max_metric(max_runtime_ms, result.result.runtime_ms)
                     max_memory_kb = self._max_metric(max_memory_kb, result.result.memory_kb)
                     if collect_all:
@@ -459,7 +501,32 @@ class JudgeExecutor:
                             runtime_ms=max_runtime_ms,
                             memory_kb=max_memory_kb,
                         )
+                    completed_count += 1
+                    if progress and not collect_all:
+                        progress("judging", completed_count, total)
         return full_result() if collect_all else self._execution_result("accepted", None, runtime_ms=max_runtime_ms, memory_kb=max_memory_kb)
+
+    def _has_timeout_evidence(self, result: TestcaseRunResult, origin: str) -> bool:
+        timing = result.timing
+        if timing is None or timing.source != "isolate" or timing.status != "TO":
+            return False
+        cpu = self._nonnegative_seconds(timing.cpu_seconds)
+        limit = self._nonnegative_seconds(timing.cpu_limit_seconds)
+        if cpu is None or limit is None or limit <= 0:
+            return False
+        if origin == "cpu":
+            return timing.timeout_origin == "cpu" and cpu >= limit
+        wall = self._nonnegative_seconds(timing.wall_seconds)
+        wall_limit = self._nonnegative_seconds(timing.wall_limit_seconds)
+        return (timing.timeout_origin == "wall" and cpu < limit
+                and wall is not None and wall_limit is not None
+                and wall_limit > 0 and wall >= wall_limit)
+
+    def _needs_timeout_confirmation(self, result: TestcaseRunResult) -> bool:
+        if result.result.status == "time_limit_exceeded":
+            return not self._has_timeout_evidence(result, "cpu")
+        return (result.result.status == "system_error" and result.timing is not None
+                and result.timing.timeout_origin in {"unknown", "watchdog"})
     def _run_single_testcase(
         self,
         command: list[str],
@@ -473,6 +540,9 @@ class JudgeExecutor:
         order = int(testcase["display_order"])
         job_id = str(job.get("judge_job_id") or "-")
         started_at = time.monotonic()
+        timing = None
+        def outcome(result):
+            return TestcaseRunResult(order, result, timing=timing)
         try:
             case_dir = job_dir / "cases" / f"{order:03d}"
             case_dir.mkdir(parents=True, exist_ok=True)
@@ -517,8 +587,17 @@ class JudgeExecutor:
         except Exception as error:
             message = f"testcase {order} system error: {type(error).__name__}: {error}"
             print(f"[judge-agent] job={job_id} testcase={order} status=system_error error={message}", flush=True)
-            return TestcaseRunResult(order, self._execution_result("system_error", message[-4000:], order))
+            return outcome(self._execution_result("system_error", message[-4000:], order))
+        timing = getattr(completed, "execution_timing", None)
+        if timing is not None:
+            print(f"[judge-agent] job={job_id} testcase={order} stage=execution-timing "
+                  f"status={timing.status} timeout_origin={timing.timeout_origin} "
+                  f"cpu_seconds={timing.cpu_seconds} wall_seconds={timing.wall_seconds} "
+                  f"cpu_limit_seconds={timing.cpu_limit_seconds} "
+                  f"wall_limit_seconds={timing.wall_limit_seconds}", flush=True)
         runtime_ms = getattr(completed, "runtime_ms", None)
+        if self.sandbox_mode == "isolate" and timing is not None:
+            runtime_ms = self._seconds_to_ms(timing.cpu_seconds)
         memory_kb = getattr(completed, "memory_kb", None)
         if job.get("collect_all_results") is True and job.get("submission", {}).get("submission_kind") in {"editor_verification", "operator_test"}:
             output = getattr(completed, "stdout_prefix", None)
@@ -528,16 +607,20 @@ class JudgeExecutor:
             size = getattr(completed, "stdout_size", None)
             testcase["_editor_output_total_bytes"] = size if size is not None else len((completed.stdout or "").encode("utf-8"))
 
-        if completed.returncode == 124:
-            return TestcaseRunResult(order, self._execution_result("time_limit_exceeded", f"time limit exceeded on testcase {order}", order, runtime_ms=runtime_ms, memory_kb=memory_kb))
+        if getattr(completed, "execution_error", None):
+            return outcome(self._execution_result("system_error", completed.execution_error, order, runtime_ms=runtime_ms, memory_kb=memory_kb))
+        program_exit_124 = (timing is not None and timing.source == "isolate"
+                            and timing.status in {"OK", "RE"} and timing.timeout_origin is None)
+        if completed.returncode == 124 and not program_exit_124:
+            return outcome(self._execution_result("time_limit_exceeded", f"time limit exceeded on testcase {order}", order, runtime_ms=runtime_ms, memory_kb=memory_kb))
         if completed.returncode in _output_limit_returncodes:
-            return TestcaseRunResult(order, self._execution_result("output_limit_exceeded", f"output limit exceeded on testcase {order}", order, runtime_ms=runtime_ms, memory_kb=memory_kb))
+            return outcome(self._execution_result("output_limit_exceeded", f"output limit exceeded on testcase {order}", order, runtime_ms=runtime_ms, memory_kb=memory_kb))
         if self._is_memory_limit_result(completed):
-            return TestcaseRunResult(order, self._execution_result("memory_limit_exceeded", f"memory limit exceeded on testcase {order}", order, runtime_ms=runtime_ms, memory_kb=memory_kb))
+            return outcome(self._execution_result("memory_limit_exceeded", f"memory limit exceeded on testcase {order}", order, runtime_ms=runtime_ms, memory_kb=memory_kb))
         if completed.returncode != 0:
-            return TestcaseRunResult(order, self._execution_result("runtime_error", (completed.stderr or completed.stdout)[-4000:], order, runtime_ms=runtime_ms, memory_kb=memory_kb))
+            return outcome(self._execution_result("runtime_error", (completed.stderr or completed.stdout)[-4000:], order, runtime_ms=runtime_ms, memory_kb=memory_kb))
         if reference_output(job):
-            return TestcaseRunResult(order, self._execution_result("accepted", None, runtime_ms=runtime_ms, memory_kb=memory_kb))
+            return outcome(self._execution_result("accepted", None, runtime_ms=runtime_ms, memory_kb=memory_kb))
         case_label = self._testcase_label(testcase)
         if checker:
             checker_result = self._run_checker(
@@ -553,13 +636,12 @@ class JudgeExecutor:
                 strict_errors=job.get("scoring_mode") == "ioi",
             )
             if checker_result:
-                return TestcaseRunResult(order, self._execution_result(checker_result.status, checker_result.message, checker_result.failed_testcase_order, runtime_ms=runtime_ms, memory_kb=memory_kb))
-            return TestcaseRunResult(order, self._execution_result("accepted", None, runtime_ms=runtime_ms, memory_kb=memory_kb))
+                return outcome(self._execution_result(checker_result.status, checker_result.message, checker_result.failed_testcase_order, runtime_ms=runtime_ms, memory_kb=memory_kb))
+            return outcome(self._execution_result("accepted", None, runtime_ms=runtime_ms, memory_kb=memory_kb))
         expected = self._normalize_output(expected_text)
         actual = self._normalize_output(completed.stdout)
         if actual != expected:
-            return TestcaseRunResult(
-                order,
+            return outcome(
                 self._execution_result(
                     "wrong_answer",
                     self._build_wrong_answer_message(
@@ -578,7 +660,7 @@ class JudgeExecutor:
                     memory_kb=memory_kb,
                 ),
             )
-        return TestcaseRunResult(order, self._execution_result("accepted", None, runtime_ms=runtime_ms, memory_kb=memory_kb))
+        return outcome(self._execution_result("accepted", None, runtime_ms=runtime_ms, memory_kb=memory_kb))
 
     def _prepare_checker(self, job_dir: Path, package_files: list[dict]) -> PreparedChecker | ExecutionResult | None:
         checker_files = [item for item in package_files if item.get("role") == "checker"]
@@ -1038,8 +1120,9 @@ class JudgeExecutor:
                 check=False,
             )
             meta = self._read_isolate_meta(meta_path)
-            if not meta and isolated.returncode != 0:
-                return self._completed_process(
+            if (not meta or self._nonnegative_seconds(meta.get("time")) is None
+                    or meta.get("status") not in {None, "OK", "RE", "TO", "SG"}):
+                completed = self._completed_process(
                     command,
                     127,
                     stdout_file,
@@ -1047,6 +1130,11 @@ class JudgeExecutor:
                     started_at,
                     fallback_stderr="isolate failed without execution metadata",
                 )
+                completed.execution_error = "채점 실행의 측정 정보가 없습니다."
+                completed.execution_timing = replace(self._isolate_execution_timing(
+                    meta, timeout_seconds, wall_time_seconds,
+                ), timeout_origin="unknown")
+                return completed
             returncode = self._isolate_returncode(meta)
             if self._file_size(stdout_file) > self.output_limit_bytes or self._file_size(stderr_file) > self.output_limit_bytes:
                 returncode = 125
@@ -1060,11 +1148,14 @@ class JudgeExecutor:
                 fallback_stderr=self._isolate_message(meta, returncode),
                 measured_runtime_ms=self._isolate_runtime_ms(meta),
             )
+            completed.execution_timing = self._isolate_execution_timing(
+                meta, timeout_seconds, wall_time_seconds,
+            )
             return completed
         except FileNotFoundError as error:
             return subprocess.CompletedProcess(command, 127, "", str(error))
         except subprocess.TimeoutExpired:
-            return self._completed_process(
+            completed = self._completed_process(
                 command,
                 124,
                 stdout_file,
@@ -1072,6 +1163,11 @@ class JudgeExecutor:
                 started_at,
                 fallback_stderr="time limit exceeded",
             )
+            completed.execution_timing = self._isolate_execution_timing(
+                {}, timeout_seconds, self._isolate_wall_time_seconds(timeout_seconds), watchdog=True,
+            )
+            completed.execution_error = "채점 실행 감시 시간이 초과되어 측정 결과를 확인하지 못했습니다."
+            return completed
         finally:
             try:
                 subprocess.run(
@@ -1122,13 +1218,45 @@ class JudgeExecutor:
             return 127
 
     def _isolate_runtime_ms(self, meta: dict[str, str]) -> int | None:
-        value = meta.get("time")
-        if value is None:
+        return self._seconds_to_ms(self._nonnegative_seconds(meta.get("time")))
+
+    @staticmethod
+    def _nonnegative_seconds(value: object) -> float | None:
+        if isinstance(value, bool) or value is None:
             return None
         try:
-            return max(0, int(float(value) * 1000))
-        except ValueError:
+            parsed = float(value)
+        except (TypeError, ValueError, OverflowError):
             return None
+        return parsed if math.isfinite(parsed) and 0 <= parsed <= 86400 else None
+
+    @classmethod
+    def _seconds_to_ms(cls, value: object) -> int | None:
+        parsed = cls._nonnegative_seconds(value)
+        return int(parsed * 1000) if parsed is not None else None
+
+    def _isolate_execution_timing(
+        self, meta: dict[str, str], cpu_limit_seconds: float,
+        wall_limit_seconds: float, watchdog: bool = False,
+    ) -> ExecutionTiming:
+        cpu = self._nonnegative_seconds(meta.get("time"))
+        wall = self._nonnegative_seconds(meta.get("time-wall"))
+        limit = self._nonnegative_seconds(cpu_limit_seconds)
+        wall_limit = self._nonnegative_seconds(wall_limit_seconds)
+        status = meta.get("status")
+        origin = None
+        if watchdog:
+            origin = "watchdog"
+        elif status == "TO":
+            origin = "unknown"
+            if cpu is not None and limit is not None and limit > 0:
+                if cpu >= limit:
+                    origin = "cpu"
+                elif wall is not None and wall_limit is not None and wall_limit > 0 and wall >= wall_limit:
+                    origin = "wall"
+        elif not meta:
+            origin = "unknown"
+        return ExecutionTiming(cpu, wall, limit, wall_limit, origin, status=status)
 
     def _isolate_memory_kb(self, meta: dict[str, str]) -> int | None:
         try:
